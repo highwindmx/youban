@@ -123,24 +123,107 @@ def test_trim_no_orphan_tool():
     assert out[-1]["role"] == "user"
 
 
+# ---------------- 流式调用 mock 辅助 ----------------
+def _delta(reasoning=None, content=None, tool_calls=None):
+    d = MagicMock()
+    d.reasoning_content = reasoning
+    d.content = content
+    d.tool_calls = tool_calls
+    return d
+
+
+def _tc_delta(idx, id=None, name=None, args=None):
+    tc = MagicMock()
+    tc.index = idx
+    tc.id = id
+    fn = MagicMock()
+    fn.name = name
+    fn.arguments = args
+    tc.function = fn
+    return tc
+
+
+def _chunk(delta, usage=None, finish=None):
+    ch = MagicMock()
+    ch.usage = usage
+    choice = MagicMock()
+    choice.delta = delta
+    choice.finish_reason = finish
+    ch.choices = [choice]
+    return ch
+
+
+async def _iter_chunks(chunks):
+    for c in chunks:
+        yield c
+
+
+def _stream_client(chunks):
+    """每次调用返回同一组 chunks 的【全新】异步迭代器（适合单阶段/循环场景）。"""
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        side_effect=lambda *a, **k: _iter_chunks(chunks)
+    )
+    return client
+
+
+def _stream_client_phases(phases):
+    """第 n 次调用返回 phases[n] 的 chunks；耗尽后返回空流。"""
+    it = iter(phases)
+
+    async def create(*a, **k):
+        try:
+            chunks = next(it)
+        except StopIteration:
+            return
+        for c in chunks:
+            yield c
+
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(side_effect=create)
+    return client
+
+
+# ---------------- _stream_response 解析 ----------------
+def test_stream_response_parses_reasoning_content_and_tool_calls():
+    """_stream_response 应正确组装分段到达的 reasoning_content 与 tool_calls，并带 usage。"""
+    chunks = [
+        _chunk(_delta(reasoning="思考A")),
+        _chunk(_delta(reasoning="思考B")),
+        _chunk(_delta(content="答", tool_calls=[_tc_delta(0, id="t1", name="read_file", args='{"p":')])),
+        _chunk(_delta(content="案", tool_calls=[_tc_delta(0, name=None, args='"a"}')])),
+        _chunk(_delta(content=""), finish="tool_calls",
+               usage=MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)),
+    ]
+    client = _stream_client(chunks)
+
+    async def run():
+        out = {}
+        events = []
+        async for kind, text in llm._stream_response(
+            client, out, model="m", messages=[], tools=[], tool_choice="auto", temperature=0
+        ):
+            events.append((kind, text))
+        return out, events
+
+    out, events = asyncio.run(run())
+    assert out["reasoning_content"] == "思考A思考B"
+    assert out["content"] == "答案"
+    assert out["tool_calls"][0].id == "t1"
+    assert out["tool_calls"][0].function.name == "read_file"
+    assert out["tool_calls"][0].function.arguments == '{"p":"a"}'
+    assert out["usage"].total_tokens == 15
+    assert ("reasoning", "思考A") in events
+    assert ("token", "答") in events
+
+
 # ---------------- 会话级 persona / model 注入 ----------------
 def test_persona_and_model_injected():
     """chat_stream 应把 persona 写入系统提示、把 model 覆盖全局默认。"""
     captured = {}
+    client = _stream_client([_chunk(_delta(content="ok"), finish="stop")])
 
-    fake_resp = MagicMock()
-    fake_resp.usage = None
-    fake_choice = MagicMock()
-    fake_msg = MagicMock()
-    fake_msg.content = "ok"
-    fake_msg.tool_calls = None
-    fake_choice.message = fake_msg
-    fake_resp.choices = [fake_choice]
-
-    fake_client = MagicMock()
-    fake_client.chat.completions.create = AsyncMock(return_value=fake_resp)
-
-    with patch.object(llm, "AsyncOpenAI", return_value=fake_client), patch.object(
+    with patch.object(llm, "AsyncOpenAI", return_value=client), patch.object(
         llm.config, "DEEPSEEK_API_KEY", "test-key"
     ), patch.object(llm.db, "get_all_memory", return_value=[]):
 
@@ -153,7 +236,7 @@ def test_persona_and_model_injected():
                 persona="你是一个严谨的 Python 代码审查员",
             ):
                 pass
-            kwargs = fake_client.chat.completions.create.call_args.kwargs
+            kwargs = client.chat.completions.create.call_args.kwargs
             captured["model"] = kwargs.get("model")
             captured["messages"] = kwargs.get("messages")
 
@@ -168,20 +251,9 @@ def test_persona_and_model_injected():
 def test_model_default_when_none():
     """未指定 model 时回落到全局默认模型。"""
     captured = {}
+    client = _stream_client([_chunk(_delta(content="ok"), finish="stop")])
 
-    fake_resp = MagicMock()
-    fake_resp.usage = None
-    fake_choice = MagicMock()
-    fake_msg = MagicMock()
-    fake_msg.content = "ok"
-    fake_msg.tool_calls = None
-    fake_choice.message = fake_msg
-    fake_resp.choices = [fake_choice]
-
-    fake_client = MagicMock()
-    fake_client.chat.completions.create = AsyncMock(return_value=fake_resp)
-
-    with patch.object(llm, "AsyncOpenAI", return_value=fake_client), patch.object(
+    with patch.object(llm, "AsyncOpenAI", return_value=client), patch.object(
         llm.config, "DEEPSEEK_API_KEY", "test-key"
     ), patch.object(llm.config, "DEEPSEEK_MODEL", "deepseek-chat"), patch.object(
         llm.db, "get_all_memory", return_value=[]
@@ -192,7 +264,7 @@ def test_model_default_when_none():
                 user_message="hi", conversation_id="c2", history=[]
             ):
                 pass
-            captured["model"] = fake_client.chat.completions.create.call_args.kwargs.get(
+            captured["model"] = client.chat.completions.create.call_args.kwargs.get(
                 "model"
             )
 
@@ -210,25 +282,17 @@ def test_disabled_tool_refused_and_not_executed(tmp_path):
         executed.append(name)
         return "executed:" + name
 
-    fake_resp = MagicMock()
-    fake_resp.usage = None
-    fake_choice = MagicMock()
-    fake_msg = MagicMock()
-    fake_msg.content = None
-    tc = MagicMock()
-    tc.id = "t1"
-    tc.function.name = "run_command"  # 被禁用的高危工具
-    tc.function.arguments = '{"command":"ls"}'
-    fake_msg.tool_calls = [tc]
-    fake_choice.message = fake_msg
-    fake_resp.choices = [fake_choice]
+    chunks = [
+        _chunk(_delta(tool_calls=[_tc_delta(0, id="t1", name="run_command", args='{"command":"ls"}')]),
+               finish="tool_calls"),
+    ]
+    client = _stream_client(chunks)
 
-    with patch.object(llm, "AsyncOpenAI", return_value=MagicMock()), patch.object(
+    with patch.object(llm, "AsyncOpenAI", return_value=client), patch.object(
         llm.config, "DEEPSEEK_API_KEY", "test-key"
     ), patch.object(llm.db, "get_all_memory", return_value=[]), patch.object(
         llm.db, "add_message", new=MagicMock()
-    ), patch.object(llm.skills, "execute_tool", new=fake_exec
-    ), patch.object(llm, "_create_with_retry", new=AsyncMock(return_value=fake_resp)):
+    ), patch.object(llm.skills, "execute_tool", new=fake_exec):
 
         async def run():
             events = []
@@ -253,40 +317,25 @@ def test_disabled_tool_refused_and_not_executed(tmp_path):
 
 
 def test_enabled_tool_still_executed(tmp_path):
-    """未禁用的工具应照常执行。"""
+    """未禁用的工具应照常执行（首轮工具调用，次轮最终文本）。"""
     executed = []
 
     async def fake_exec(name, args):
         executed.append(name)
         return "ok"
 
-    # 第一次返回工具调用，第二次返回最终文本，避免 agent loop 死循环
-    state = {"n": 0}
+    phases = [
+        [_chunk(_delta(tool_calls=[_tc_delta(0, id="t1", name="run_command", args='{"command":"ls"}')]),
+                finish="tool_calls")],
+        [_chunk(_delta(content="完成"), finish="stop")],
+    ]
+    client = _stream_client_phases(phases)
 
-    def fake_create(*a, **k):
-        state["n"] += 1
-        resp = MagicMock()
-        resp.usage = None
-        m = MagicMock()
-        if state["n"] == 1:
-            m.content = None
-            tc = MagicMock()
-            tc.id = "t1"
-            tc.function.name = "run_command"
-            tc.function.arguments = '{"command":"ls"}'
-            m.tool_calls = [tc]
-        else:
-            m.content = "完成"
-            m.tool_calls = None
-        resp.choices = [MagicMock(message=m)]
-        return resp
-
-    with patch.object(llm, "AsyncOpenAI", return_value=MagicMock()), patch.object(
+    with patch.object(llm, "AsyncOpenAI", return_value=client), patch.object(
         llm.config, "DEEPSEEK_API_KEY", "test-key"
     ), patch.object(llm.db, "get_all_memory", return_value=[]), patch.object(
         llm.db, "add_message", new=MagicMock()
-    ), patch.object(llm.skills, "execute_tool", new=fake_exec
-    ), patch.object(llm, "_create_with_retry", new=AsyncMock(side_effect=fake_create)):
+    ), patch.object(llm.skills, "execute_tool", new=fake_exec):
 
         async def run():
             async for _ in llm.chat_stream(
@@ -309,20 +358,9 @@ def test_tier1_conv_memory_injected(tmp_path):
     captured = {}
     wd = tmp_path / "project"
     wd.mkdir()
+    client = _stream_client([_chunk(_delta(content="ok"), finish="stop")])
 
-    fake_resp = MagicMock()
-    fake_resp.usage = None
-    fake_choice = MagicMock()
-    fake_msg = MagicMock()
-    fake_msg.content = "ok"
-    fake_msg.tool_calls = None
-    fake_choice.message = fake_msg
-    fake_resp.choices = [fake_choice]
-
-    fake_client = MagicMock()
-    fake_client.chat.completions.create = AsyncMock(return_value=fake_resp)
-
-    with patch.object(llm, "AsyncOpenAI", return_value=fake_client), patch.object(
+    with patch.object(llm, "AsyncOpenAI", return_value=client), patch.object(
         llm.config, "DEEPSEEK_API_KEY", "test-key"
     ), patch.object(llm.config, "MB_SANDBOX", False), patch.object(
         llm.db, "get_all_memory", return_value=[]
@@ -339,7 +377,7 @@ def test_tier1_conv_memory_injected(tmp_path):
             ):
                 pass
             captured["messages"] = (
-                fake_client.chat.completions.create.call_args.kwargs.get("messages")
+                client.chat.completions.create.call_args.kwargs.get("messages")
             )
 
         asyncio.run(run())
@@ -349,23 +387,16 @@ def test_tier1_conv_memory_injected(tmp_path):
     assert "PROJECT_MEMORY_MARKER" in sys_content
 
 
-# ---------------- 深度思考 reasoning_content 透传 ----------------
+# ---------------- 深度思考 reasoning_content 流式透传 ----------------
 def test_reasoning_event_emitted_for_reasoner():
-    """deepseek-reasoner 返回 reasoning_content 时应透传为 reasoning 事件。"""
-    fake_resp = MagicMock()
-    fake_resp.usage = None
-    fake_choice = MagicMock()
-    fake_msg = MagicMock()
-    fake_msg.content = "最终答案"
-    fake_msg.tool_calls = None
-    fake_msg.reasoning_content = "让我先拆解问题：1)… 2)…"
-    fake_choice.message = fake_msg
-    fake_resp.choices = [fake_choice]
+    """deepseek-reasoner 的 reasoning_content 应以流式 reasoning 事件逐段透传。"""
+    chunks = [
+        _chunk(_delta(reasoning="让我先拆解问题：1)… 2)…")),
+        _chunk(_delta(content="最终答案"), finish="stop"),
+    ]
+    client = _stream_client(chunks)
 
-    fake_client = MagicMock()
-    fake_client.chat.completions.create = AsyncMock(return_value=fake_resp)
-
-    with patch.object(llm, "AsyncOpenAI", return_value=fake_client), patch.object(
+    with patch.object(llm, "AsyncOpenAI", return_value=client), patch.object(
         llm.config, "DEEPSEEK_API_KEY", "test-key"
     ), patch.object(llm.db, "get_all_memory", return_value=[]):
 

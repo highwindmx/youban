@@ -735,15 +735,24 @@ function addTool(name, args, result, status){
   head.onclick = ()=>card.classList.toggle('open');
   return card;
 }
-// 在助手回合顶部插入可折叠的「思考过程」块（深度思考模型 reasoning_content）
+// 在助手回合顶部插入可折叠的「思考过程」块（深度思考模型 reasoning_content）。
+// 幂等且增量：首次创建块，之后把文本逐段 append 到 body（流式边想边出字）；
+// 历史回放时整段一次性传入也兼容（作为单个文本节点）。
 function addReasoningBlock(text){
   const wrap = currentTurn; // .msg.assistant
-  if(!wrap) return;
-  const rb = document.createElement('div'); rb.className='reasoning';
-  rb.innerHTML = '<div class="reasoning-head">🧠 思考过程<span class="reasoning-toggle">▸</span></div>'
-    + '<div class="reasoning-body">'+escapeHtml(text)+'</div>';
-  rb.querySelector('.reasoning-head').onclick = ()=> rb.classList.toggle('open');
-  wrap.insertBefore(rb, wrap.firstChild);
+  if(!wrap || !text) return;
+  let rb = wrap.querySelector(':scope > .reasoning');
+  let body;
+  if(!rb){
+    rb = document.createElement('div'); rb.className='reasoning';
+    rb.innerHTML = '<div class="reasoning-head">🧠 思考过程<span class="reasoning-toggle">▸</span></div><div class="reasoning-body"></div>';
+    rb.querySelector('.reasoning-head').onclick = ()=> rb.classList.toggle('open');
+    wrap.insertBefore(rb, wrap.firstChild);
+    body = rb.querySelector('.reasoning-body');
+  } else {
+    body = rb.querySelector('.reasoning-body');
+  }
+  body.appendChild(document.createTextNode(text));
   scroll();
 }
 

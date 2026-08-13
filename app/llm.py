@@ -55,6 +55,69 @@ async def _create_with_retry(client, **kwargs):
     raise last_err
 
 
+class _StreamToolCall:
+    """流式工具调用组装用的轻量对象，接口对齐 SDK 的 choice.message.tool_calls。"""
+
+    def __init__(self, id: str, name: str, arguments: str):
+        self.id = id
+        self.type = "function"
+        self.function = type("F", (), {"name": name, "arguments": arguments})()
+
+
+async def _stream_response(client, out: dict, **kwargs):
+    """流式调用 chat.completions，边收边 yield (kind, text) 事件。
+
+    kind ∈ {"reasoning", "token"}：reasoning 为深度思考模型（reasoner）的思考过程，
+    token 为最终回答的增量文本。收完后把组装结果写入 out 字典：
+        out = {"content": str, "reasoning_content": str, "tool_calls": [...], "usage": ...}
+    tool_calls 元素为 _StreamToolCall（含 .id / .function.name / .function.arguments），
+    与下游 execute_tool / _record_tool_calls 的取用方式一致。
+
+    思考过程只透传给前端展示、不回喂模型上下文（由调用方决定）。
+    """
+    kwargs["stream"] = True
+    kwargs["stream_options"] = {"include_usage": True}
+    stream = await client.chat.completions.create(**kwargs)
+    reasoning_parts: list[str] = []
+    content_parts: list[str] = []
+    tc_acc: dict[int, dict] = {}
+    async for chunk in stream:
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            out["usage"] = usage
+        if not getattr(chunk, "choices", None):
+            continue
+        delta = chunk.choices[0].delta
+        rc = getattr(delta, "reasoning_content", None)
+        if rc:
+            reasoning_parts.append(rc)
+            yield ("reasoning", rc)
+        c = getattr(delta, "content", None)
+        if c:
+            content_parts.append(c)
+            yield ("token", c)
+        tcs = getattr(delta, "tool_calls", None)
+        if tcs:
+            for tc in tcs:
+                idx = getattr(tc, "index", 0) or 0
+                slot = tc_acc.setdefault(idx, {"id": "", "name": "", "args": ""})
+                if getattr(tc, "id", None):
+                    slot["id"] = tc.id
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        slot["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        slot["args"] += fn.arguments
+    assembled = [
+        _StreamToolCall(s["id"], s["name"], s["args"])
+        for _, s in sorted(tc_acc.items())
+    ]
+    out["content"] = "".join(content_parts)
+    out["reasoning_content"] = "".join(reasoning_parts)
+    out["tool_calls"] = assembled
+
+
 # ---------------------------------------------------------------------------
 # 上下文/历史相关的辅助函数
 # ---------------------------------------------------------------------------
@@ -348,40 +411,37 @@ async def _chat_inner(
             )
             return
 
+        # 流式调用模型：边收边推送 reasoning/token 事件；out 收集组装后的最终消息
+        out: dict = {}
         try:
-            resp = await _create_with_retry(
+            async for kind, text in _stream_response(
                 client,
+                out,
                 model=model,
                 messages=messages,
                 tools=skills.TOOL_SCHEMAS,  # type: ignore[arg-type]
                 tool_choice="auto",
-                stream=False,
                 temperature=config.TEMPERATURE,
-            )
+            ):
+                yield _event(kind, {"text": text})
         except Exception as e:  # noqa: BLE001
             yield _event("error", {"message": f"调用 DeepSeek 失败: {e}"})
             return
-        # 回传本次 token 用量，供累计统计（前端展示 / 落库）
-        if getattr(resp, "usage", None):
-            u = resp.usage
+        # 回传本次 token 用量（流式最后一帧带 usage，需 include_usage），供累计统计
+        u = out.get("usage")
+        if u is not None:
             yield _event("usage", {
-                "prompt_tokens": u.prompt_tokens,
-                "completion_tokens": u.completion_tokens,
-                "total_tokens": u.total_tokens,
+                "prompt_tokens": getattr(u, "prompt_tokens", 0),
+                "completion_tokens": getattr(u, "completion_tokens", 0),
+                "total_tokens": getattr(u, "total_tokens", 0),
             })
 
-        choice = resp.choices[0].message
-        tool_calls = choice.tool_calls or []
+        tool_calls = out.get("tool_calls") or []
 
         if not tool_calls:
-            # 模型给出最终文本回复
-            # deepseek-reasoner 等推理模型会把思考过程放在 reasoning_content
-            reasoning = getattr(choice, "reasoning_content", None)
-            if isinstance(reasoning, str) and reasoning.strip():
-                yield _event("reasoning", {"text": reasoning})
-            final = choice.content or ""
+            # 模型给出最终文本回复（reasoning 已随流以 reasoning 事件推送，不再单独 emit）
+            final = out.get("content") or ""
             accumulated.append(final)
-            yield _event("token", {"text": final})
             yield _event("done", {
                 "conversation_id": conversation_id,
                 "content": "".join(accumulated),
@@ -389,7 +449,7 @@ async def _chat_inner(
             return
 
         # 把 assistant 的工具调用意图加入上下文，并逐个执行
-        assistant_msg: dict = {"role": "assistant", "content": choice.content or ""}
+        assistant_msg: dict = {"role": "assistant", "content": out.get("content") or ""}
         serialized = [
             {
                 "id": tc.id,
@@ -449,7 +509,7 @@ async def _chat_inner(
         db.add_message(
             conversation_id,
             "assistant",
-            choice.content or "",
+            out.get("content") or "",
             tool_calls=_record_tool_calls(tool_calls, tool_results),
         )
 
