@@ -298,6 +298,9 @@ async def _chat_inner(
     # 超长对话按 token 预算滑动截断（保留系统提示与最近若干轮）
     messages = _trim_to_budget(messages)
 
+    # 累积最终回复文本，最终通过 done 事件一并返回，供服务端稳健落库
+    accumulated: list[str] = []
+
     for iteration in range(config.MAX_AGENT_ITERATIONS):
         if await _should_stop():
             yield _event(
@@ -314,7 +317,7 @@ async def _chat_inner(
                 tools=skills.TOOL_SCHEMAS,  # type: ignore[arg-type]
                 tool_choice="auto",
                 stream=False,
-                temperature=0.3,
+                temperature=config.TEMPERATURE,
             )
         except Exception as e:  # noqa: BLE001
             yield _event("error", {"message": f"调用 DeepSeek 失败: {e}"})
@@ -334,8 +337,12 @@ async def _chat_inner(
         if not tool_calls:
             # 模型给出最终文本回复
             final = choice.content or ""
+            accumulated.append(final)
             yield _event("token", {"text": final})
-            yield _event("done", {"conversation_id": conversation_id})
+            yield _event("done", {
+                "conversation_id": conversation_id,
+                "content": "".join(accumulated),
+            })
             return
 
         # 把 assistant 的工具调用意图加入上下文，并逐个执行
@@ -386,10 +393,10 @@ async def _chat_inner(
         )
 
     # 达到迭代上限，强制收尾
-    yield _event(
-        "token",
-        {
-            "text": "\n\n[已达到最大操作步数，停止自动执行。你可以继续让我处理。]"
-        },
-    )
-    yield _event("done", {"conversation_id": conversation_id})
+    limit_msg = "\n\n[已达到最大操作步数，停止自动执行。你可以继续让我处理。]"
+    accumulated.append(limit_msg)
+    yield _event("token", {"text": limit_msg})
+    yield _event("done", {
+        "conversation_id": conversation_id,
+        "content": "".join(accumulated),
+    })

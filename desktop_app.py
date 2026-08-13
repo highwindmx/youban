@@ -137,8 +137,8 @@ def main() -> None:
         height=760,
         min_size=(900, 600),
     )
-    # 局部调试用：打开 DevTools（仅 Windows WebView2）
-    if config.IS_WINDOWS:
+    # 局部调试用：仅当设置 MB_DEBUG=1 时自动打开 DevTools（避免默认打扰用户）
+    if config.MB_DEBUG:
         try:
             window.evaluate_js("if(window.chrome&&chrome.webview)chrome.webview.openDevTools();")
         except Exception:  # noqa: BLE001

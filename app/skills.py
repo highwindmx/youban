@@ -205,9 +205,40 @@ def search_text(pattern: str, path: str = ".") -> str:
 def run_command(command: str) -> str:
     """执行受控 shell 命令（在工作区内），返回 stdout/stderr。
 
-    含 Windows 命令护栏：在本机为 Windows 时，拦截常见的 Unix-only 命令，
-    避免模型误调 ls/cat/rm 等导致失败；并对高危删除命令做确认拦截。
+    跨平台安全护栏：危险二进制黑名单、命令链分隔符、高危删除命令在所有平台生效；
+    Windows 下额外把 ls/cat/rm 等 Unix 命令提示/翻译为 Windows 等效命令。
     """
+    if not command or not command.strip():
+        return "[错误] 命令为空"
+
+    first = command.strip().split()[0]
+    base = first.split(".")[0].lower().replace('"', "").replace("'", "")
+    if "\\" in base or "/" in base:
+        base = base.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+
+    # —— 跨平台通用护栏（不再仅限 Windows）——
+    # 危险命令基名黑名单（防提示注入启动新 shell / 下载执行 / 反弹等）
+    if base in _DANGEROUS_BIN:
+        return (
+            f"[已拦截] 禁止执行危险命令 '{first}'，以防提示注入执行任意指令。"
+            "如需运行脚本，请使用 run_code 工具。"
+        )
+    # 命令链分隔符禁用（防注入拼接额外命令）
+    if _CHAIN_RE.search(command):
+        return (
+            "[已拦截] 命令包含链式操作符（; && || &），已禁止以防止命令注入。"
+            "如需组合操作，请拆成多条命令或改用专用工具。"
+        )
+    # 高危删除类命令二次确认拦截（通配/越级删除）
+    if re.search(r"\b(del|rmdir|rd)\b", command, re.I) and (
+        "*" in command or "/" in command or ".." in command
+    ):
+        return (
+            "[已拦截] 检测到高危通配/越级删除命令，已阻止执行以保障本机文件安全。"
+            "如需删除，请使用 manage_dir(action='delete') 工具，限定在工作目录范围内。"
+        )
+
+    # —— Windows 专属：Unix 命令翻译提示 ——
     if config.IS_WINDOWS:
         _UNIX_ONLY = {
             "ls": "dir",
@@ -221,8 +252,6 @@ def run_command(command: str) -> str:
             "touch": None,  # Windows 无对应，需用重定向创建
             "clear": "cls",
         }
-        first = command.strip().split()[0] if command.strip() else ""
-        base = first.split(".")[0].lower()
         if base in _UNIX_ONLY:
             repl = _UNIX_ONLY[base]
             if repl is None:
@@ -233,29 +262,6 @@ def run_command(command: str) -> str:
             return (
                 f"[已拦截并提示] 本机为 Windows，'{first}' 是 Unix 命令。请改用 Windows 等效命令: '{repl}'。"
                 "（建议优先使用 list_dir/read_file/write_file/manage_dir 等专用工具，而非 shell 命令）"
-            )
-        # 危险命令基名黑名单（防提示注入启动新 shell / 下载执行 / 反弹等）
-        base = first.split(".")[0].lower().replace('"', "").replace("'", "")
-        if "\\" in base or "/" in base:
-            base = base.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-        if base in _DANGEROUS_BIN:
-            return (
-                f"[已拦截] 禁止执行危险命令 '{first}'，以防提示注入执行任意指令。"
-                "如需运行脚本，请使用 run_code 工具。"
-            )
-        # 命令链分隔符禁用（防注入拼接额外命令）
-        if _CHAIN_RE.search(command):
-            return (
-                "[已拦截] 命令包含链式操作符（; && || &），已禁止以防止命令注入。"
-                "如需组合操作，请拆成多条命令或改用专用工具。"
-            )
-        # 高危删除类命令二次确认拦截
-        if re.search(r"\b(del|rmdir|rd)\b", command, re.I) and (
-            "*" in command or "/" in command or ".." in command
-        ):
-            return (
-                "[已拦截] 检测到高危通配/越级删除命令，已阻止执行以保障本机文件安全。"
-                "如需删除，请使用 manage_dir(action='delete') 工具，限定在工作目录范围内。"
             )
 
     return _run_subprocess(command, effective_root(), timeout=30, shell=True)
@@ -341,8 +347,7 @@ def manage_dir(action: str, path: str, content: str = "") -> str:
 
     action: list | read | write | mkdir | delete | move
     path: 相对 TARGET_DIR 的路径
-    content: write 时必填
-    dest: move 时的目标相对路径
+    content: write 时的文件内容；move 时的目标相对路径
     """
     try:
         target = _safe_target_path(path)
@@ -374,6 +379,13 @@ def manage_dir(action: str, path: str, content: str = "") -> str:
     if action == "delete":
         if not target.exists():
             return f"[错误] 路径不存在: {path}"
+        # 防误删根目录 / 越级 / 通配
+        if path in ("", ".", "..", "/"):
+            return "[已拦截] 禁止删除工作目录根本身，以防误删整个项目。"
+        if ".." in path or "*" in path:
+            return "[已拦截] 删除操作禁止包含 '..' 或 '*'，以防越级/批量误删。"
+        if target.resolve() == effective_target_dir().resolve():
+            return "[已拦截] 禁止删除工作目录根本身，以防误删整个项目。"
         if target.is_dir():
             import shutil
 
@@ -586,17 +598,33 @@ def _parse_pptx(path: str) -> str:
     return "\n\n".join(out)
 
 
-def _parse_pdf(path: str) -> str:
+def _parse_pdf(path: str, max_chars: int = _PARSE_MAX_CHARS) -> str:
     try:
         import pymupdf as fitz
     except ImportError:  # 旧版包名仍为 fitz
         import fitz
 
     doc = fitz.open(path)
-    pages = []
+    parts: list[str] = []
+    total = 0
+    truncated = False
     for n, page in enumerate(doc, 1):
-        pages.append(f"<!-- 第 {n} 页 -->\n{page.get_text()}")
-    return "\n\n".join(pages)
+        t = page.get_text()
+        if not t:
+            continue
+        block = f"<!-- 第 {n} 页 -->\n{t}"
+        parts.append(block)
+        total += len(block)
+        # 边读边截断：达到上限即停止读取后续页，避免大 PDF 全量载入内存
+        if total >= max_chars:
+            truncated = True
+            break
+    if truncated:
+        parts.append(
+            f"\n[内容过长，仅读取前 {max_chars} 字符对应的页面；"
+            " 如需完整内容，请用 run_code 按页读取。]"
+        )
+    return "\n\n".join(parts)
 
 
 def _parse_csv(path: str) -> str:
@@ -670,7 +698,7 @@ def parse_document(path: str, max_chars: int = _PARSE_MAX_CHARS) -> str:
         elif suffix == ".pptx":
             text = _parse_pptx(str(p))
         elif suffix == ".pdf":
-            text = _parse_pdf(str(p))
+            text = _parse_pdf(str(p), max_chars)
         elif suffix == ".csv":
             text = _parse_csv(str(p))
         elif suffix in {".html", ".htm"}:
@@ -756,6 +784,60 @@ def make_ppt(title: str, slides: list, output: str = "generated.pptx") -> str:
         return f"[错误] 生成 PPT 失败: {e}"
 
 
+# ---- 新增 Skill：Git 操作 ----
+def git_op(action: str, args: str = "", repo_path: str = ".") -> str:
+    """在有效工作目录范围内执行 git 操作，返回输出。
+
+    action: git 子命令（仅允许白名单内的安全/常规操作）
+    args:   该子命令的额外参数（空格分隔；支持引号包裹，如 commit -m "msg"）
+    repo_path: 仓库所在目录（相对有效根），默认当前工作目录
+
+    安全：禁止破坏性/强制操作（--force/-f/--hard/--delete/-D 等）；
+    参数经 shlex 解析并对 shell 元字符做拦截，避免注入。
+    """
+    import shlex
+
+    action = (action or "").strip().lower()
+    if not action:
+        return "[错误] 需指定 git 子命令（如 status / commit / push）"
+
+    # 允许的子命令白名单（不含 reset/checkout 等高风险命令）
+    ALLOWED = {
+        "status", "diff", "log", "show", "branch", "add", "commit", "push",
+        "pull", "fetch", "tag", "remote", "mv", "rm", "config", "init",
+        "restore", "switch", "merge", "stash", "clean",
+    }
+    if action not in ALLOWED:
+        return f"[已拦截] 不允许的 git 子命令: {action}（仅支持白名单内的安全/常规操作）"
+
+    raw = (args or "").replace("\n", " ").replace("\r", " ").strip()
+    # 拦截 shell 元字符，避免通过参数注入额外命令
+    if re.search(r"[;&|`$<>]", raw):
+        return "[已拦截] git 参数包含非法字符（; & | ` $ < >），已阻止。"
+
+    try:
+        argv = ["git", action] + shlex.split(raw)
+    except ValueError as e:
+        return f"[错误] 参数解析失败: {e}"
+
+    # 破坏性/强制标志拦截
+    _DANGEROUS_FLAGS = {"--force", "-f", "--hard", "--mixed", "--soft",
+                        "--delete", "-D", "--no-verify"}
+    hit = next((f for f in argv if f in _DANGEROUS_FLAGS), None)
+    if hit:
+        return (f"[已拦截] 检测到破坏性/强制标志 '{hit}'，已阻止以防数据丢失。"
+                "如需强制操作，请在终端手动执行。")
+
+    try:
+        cwd = _safe_path(repo_path)
+    except ValueError as e:
+        return f"[错误] {e}"
+    try:
+        return _run_subprocess(argv, cwd, timeout=60, shell=False)
+    except Exception as e:  # noqa: BLE001
+        return f"[错误] git 执行异常: {e}"
+
+
 # ---- 工具注册表 ----
 TOOLS: dict[str, Callable[..., str]] = {
     "read_file": read_file,
@@ -772,6 +854,7 @@ TOOLS: dict[str, Callable[..., str]] = {
     "forget": forget,
     "parse_document": parse_document,
     "make_ppt": make_ppt,
+    "git_op": git_op,
 }
 
 
@@ -1024,6 +1107,31 @@ TOOL_SCHEMAS = [
                     },
                 },
                 "required": ["title", "slides"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_op",
+            "description": "在有效工作目录范围内执行 git 操作（status/diff/log/add/commit/branch/push/pull 等）。仅允许白名单内安全子命令，禁止 --force/--hard 等破坏性操作；多步操作（如先 commit 再 push）请分多次调用。当用户要求提交代码、推送到远程、查看改动/历史时使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "git 子命令，如 status / diff / log / add / commit / branch / push / pull",
+                    },
+                    "args": {
+                        "type": "string",
+                        "description": "子命令的额外参数，空格分隔，如 commit 的 '-m \"说明\"' 或 push 的 'origin main'",
+                    },
+                    "repo_path": {
+                        "type": "string",
+                        "description": "仓库目录（相对有效根），默认 '.'",
+                    },
+                },
+                "required": ["action"],
             },
         },
     },

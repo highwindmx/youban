@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File
@@ -14,8 +15,6 @@ from app import db
 from app.config import config
 from app.llm import chat_stream
 from app.schemas import ChatRequest, RenameRequest
-
-app = FastAPI(title="mBuddy")
 
 # 每个进行中的对话流对应一个中止事件；前端点「停止」即 set 它
 _STOP_EVENTS: dict[str, asyncio.Event] = {}
@@ -28,9 +27,14 @@ def _new_conv_id() -> str:
 _STATIC = Path(__file__).resolve().parent.parent / "static"
 
 
-@app.on_event("startup")
-async def _startup() -> None:
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # 启动时初始化数据库（替代已弃用的 @app.on_event("startup")）
     db.init_db()
+    yield
+
+
+app = FastAPI(title="友伴", lifespan=_lifespan)
 
 
 @app.get("/")
@@ -100,9 +104,19 @@ async def upload(files: list[UploadFile] = File(...)):
     dest = config.TARGET_DIR
     dest.mkdir(parents=True, exist_ok=True)
     saved: list[str] = []
+    max_bytes = config.MAX_UPLOAD_MB * 1024 * 1024
     for f in files:
         # 防目录穿越：只用纯文件名
         safe_name = os.path.basename(f.filename or "file")
+        # 单文件大小上限，防止超大文件撑爆内存
+        if f.size is not None and f.size > max_bytes:
+            return {
+                "paths": saved,
+                "error": (
+                    f"文件 {safe_name} 超过上传上限 {config.MAX_UPLOAD_MB}MB，"
+                    "已跳过；其余文件已保存。"
+                ),
+            }
         # 重名则加时间戳避免覆盖
         target = dest / safe_name
         if target.exists():
@@ -131,17 +145,28 @@ async def chat(req: ChatRequest):
     _STOP_EVENTS[conv_id] = stop_event
 
     async def event_gen():
-        final_text = []
+        final_text = ""
+        got_done = False
         try:
             async for chunk in chat_stream(
                 req.message, conv_id, history, stop_event,
                 images=req.images or None, work_dir=req.work_dir or None
             ):
                 yield chunk
-                if chunk.startswith("event: token"):
+                # 稳健解析：优先采用 done 事件带回的完整文本；未带则回退累加 token
+                if chunk.startswith("event: done"):
                     try:
                         data = json.loads(chunk.split("data: ", 1)[1])
-                        final_text.append(data.get("text", ""))
+                        content = data.get("content")
+                        if content:
+                            final_text = content
+                            got_done = True
+                    except Exception:  # noqa: BLE001
+                        pass
+                elif chunk.startswith("event: token") and not got_done:
+                    try:
+                        data = json.loads(chunk.split("data: ", 1)[1])
+                        final_text += data.get("text", "")
                     except Exception:  # noqa: BLE001
                         pass
                 elif chunk.startswith("event: usage"):
@@ -152,9 +177,9 @@ async def chat(req: ChatRequest):
                         pass
         finally:
             _STOP_EVENTS.pop(conv_id, None)
-            full = "".join(final_text)
-            if full:
-                db.add_message(conv_id, "assistant", full)
+            # 落库守卫：仅当存在非空（去空白）文本时才写入，避免空消息
+            if final_text and final_text.strip():
+                db.add_message(conv_id, "assistant", final_text)
             yield ""
 
     return StreamingResponse(

@@ -31,7 +31,7 @@ BUILTIN_SKILLS: dict[str, dict] = {
     "make_ppt": {
         "name": "AI PPT",
         "triggers": [
-            "ppt", "幻灯片", "演示文稿", "课件", "做个ppt", "生成ppt",
+            "幻灯片", "演示文稿", "课件", "做个ppt", "生成ppt", "pptx",
             "slides", "deck", "presentation",
         ],
         "system": (
@@ -45,6 +45,28 @@ BUILTIN_SKILLS: dict[str, dict] = {
             "或在 PowerPoint 中微调排版）。\n"
             "纪律：内容须准确、自洽；若用户给了素材则基于素材，否则可基于你的知识生成，"
             "但不得编造具体数据/引用。"
+        ),
+    },
+    "git_ops": {
+        "name": "Git 操作",
+        "triggers": [
+            "提交代码", "提交改动", "git 提交", "git commit", "推送到", "push 到",
+            "推送到远程", "拉取代码", "git pull", "查看改动", "查看历史",
+            "git status", "git log", "版本管理", "打个 tag", "建个分支",
+        ],
+        "system": (
+            "【内置技能：Git 操作】\n"
+            "当用户要求提交代码、推送/拉取、查看改动或历史、建分支/打 tag 时，请：\n"
+            "1. 先用 git_op(action='status') 与 git_op(action='diff') 查看当前改动，"
+            "确认要提交的内容；不要凭空猜测文件状态。\n"
+            "2. 提交前先用 git_op(action='add', args='.') 暂存，再 "
+            "git_op(action='commit', args='-m \"<中文+动词开头的提交说明>\"')；"
+            "提交信息应简洁说明「做了什么」。\n"
+            "3. 推送前确认分支：git_op(action='branch')；如需推送，"
+            "git_op(action='push', args='origin <分支名>')。禁止加 --force/-f。\n"
+            "4. 多步操作（add → commit → push）请分多次调用 git_op，不要用链式命令。\n"
+            "5. 若用户未指定仓库目录，默认在当前工作目录范围内操作。\n"
+            "纪律：不执行 reset/checkout 等高风险命令；不强行推送（禁止 --force）。"
         ),
     },
 }

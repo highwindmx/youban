@@ -34,6 +34,11 @@ class Config:
     DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
     DEEPSEEK_VISION_MODEL: str = os.getenv("DEEPSEEK_VISION_MODEL", "")
     MAX_AGENT_ITERATIONS: int = int(os.getenv("MAX_AGENT_ITERATIONS", "8"))
+    TEMPERATURE: float = float(os.getenv("TEMPERATURE", "0.3"))
+    # 桌面端调试开关：设 1 才在启动时自动打开 DevTools（默认关）
+    MB_DEBUG: bool = os.getenv("MB_DEBUG", "false").lower() != "false"
+    # 单文件上传上限（MB），防止超大文件撑爆内存
+    MAX_UPLOAD_MB: int = int(os.getenv("MAX_UPLOAD_MB", "50"))
     DB_PATH: str = os.getenv("DB_PATH", str(_PROJECT_ROOT / "mini_wb.db"))
     WORKSPACE_ROOT: Path = WORKSPACE_ROOT
     TARGET_DIR: Path = TARGET_DIR
