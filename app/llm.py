@@ -26,17 +26,37 @@ SYSTEM_PROMPT = (
     "每次回复尽量简洁、面向结果。所有文件操作都限定在工作区内。"
 )
 
-# 运行时注入的环境上下文（含操作系统信息，避免模型误用 Linux 命令）
-ENV_CONTEXT = (
-    f"\n\n[运行环境]\n"
-    f"- 操作系统：{config.OS_NAME}（{'Windows' if config.IS_WINDOWS else '非 Windows'}）\n"
-    f"- 工作区根目录(WORKSPACE_ROOT)：{config.WORKSPACE_ROOT}\n"
-    f"- 可操作目录(TARGET_DIR)：{config.TARGET_DIR}\n"
-    f"- 文档目录(DOC_ROOT)：{config.DOC_ROOT}\n"
-    f"- 命令规范：本机为 {config.OS_NAME}，执行命令或写脚本时请使用对应系统的命令"
-    f"（Windows 用 dir/type/del/copy/move 等，不要用 ls/cat/rm 等 Unix 命令；"
-    f"优先用专用工具如 list_dir/read_file/write_file/manage_dir，而非裸 shell 命令）。"
-)
+def _env_context(work_dir: str | None = None) -> str:
+    """运行时注入的环境上下文（含操作系统信息，避免模型误用 Linux 命令）。
+
+    work_dir 非空时，WORKSPACE_ROOT/TARGET_DIR 直接指向该工作目录——与底层文件工具
+    （effective_root/effective_target_dir）的实际生效根保持一致，避免模型误以为当前
+    目录仍是友伴根目录。
+    """
+    if work_dir:
+        root = Path(work_dir).resolve()
+        ws_root = root
+        target_dir = root
+        scope_note = (
+            "\n- 说明：本对话已指定工作目录，以上 WORKSPACE_ROOT/TARGET_DIR 即指该目录；"
+            "所有文件读写、列目录、搜索、解析文档、目录管理默认以此为根，"
+            "相对路径以此目录为基准，请勿擅自操作该目录之外的路径。"
+        )
+    else:
+        ws_root = config.WORKSPACE_ROOT
+        target_dir = config.TARGET_DIR
+        scope_note = ""
+    return (
+        f"\n\n[运行环境]\n"
+        f"- 操作系统：{config.OS_NAME}（{'Windows' if config.IS_WINDOWS else '非 Windows'}）\n"
+        f"- 工作区根目录(WORKSPACE_ROOT)：{ws_root}\n"
+        f"- 可操作目录(TARGET_DIR)：{target_dir}\n"
+        f"- 文档目录(DOC_ROOT)：{config.DOC_ROOT}\n"
+        f"- 命令规范：本机为 {config.OS_NAME}，执行命令或写脚本时请使用对应系统的命令"
+        f"（Windows 用 dir/type/del/copy/move 等，不要用 ls/cat/rm 等 Unix 命令；"
+        f"优先用专用工具如 list_dir/read_file/write_file/manage_dir，而非裸 shell 命令）。"
+        + scope_note
+    )
 
 def _event(kind: str, data: dict) -> str:
     return f"event: {kind}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -383,7 +403,7 @@ async def _chat_inner(
             "\n（请在本对话中始终遵循以上角色设定，除非用户明确要求切换。）"
         )
     messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT + persona_text + ENV_CONTEXT + wd_text + skill_text + mem_text}
+        {"role": "system", "content": SYSTEM_PROMPT + persona_text + _env_context(work_dir) + wd_text + skill_text + mem_text}
     ]
     # 历史消息：还原 assistant(tool_calls) + tool 配对，并回喂上一轮工具结果
     messages.extend(_expand_history(history))

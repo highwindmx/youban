@@ -387,6 +387,69 @@ def test_tier1_conv_memory_injected(tmp_path):
     assert "PROJECT_MEMORY_MARKER" in sys_content
 
 
+# ---------------- 工作目录须反映到环境上下文（WORKSPACE_ROOT/TARGET_DIR） ----------------
+def test_workdir_reflected_in_env_context(tmp_path):
+    """设了工作目录时，系统提示的 WORKSPACE_ROOT/TARGET_DIR 必须指向该目录，
+    而非全局友伴根目录——否则模型会误以为当前目录仍是友伴根目录（历史 bug）。"""
+    captured = {}
+    wd = tmp_path / "my_project"
+    wd.mkdir()
+    global_root = str(llm.config.WORKSPACE_ROOT)
+    client = _stream_client([_chunk(_delta(content="ok"), finish="stop")])
+
+    with patch.object(llm, "AsyncOpenAI", return_value=client), patch.object(
+        llm.config, "DEEPSEEK_API_KEY", "test-key"
+    ), patch.object(llm.config, "MB_SANDBOX", False), patch.object(
+        llm.db, "get_all_memory", return_value=[]
+    ):
+        async def run():
+            async for _ in llm.chat_stream(
+                user_message="hi",
+                conversation_id="c_env",
+                history=[],
+                work_dir=str(wd),
+            ):
+                pass
+            captured["messages"] = (
+                client.chat.completions.create.call_args.kwargs.get("messages")
+            )
+
+        asyncio.run(run())
+
+    sys_content = captured["messages"][0]["content"]
+    # 工作目录应作为 WORKSPACE_ROOT 出现
+    assert f"工作区根目录(WORKSPACE_ROOT)：{str(wd)}" in sys_content
+    assert f"可操作目录(TARGET_DIR)：{str(wd)}" in sys_content
+    # 全局友伴根目录不得作为 WORKSPACE_ROOT 行的值出现（仅可能出现在说明里，故精确匹配行）
+    assert f"工作区根目录(WORKSPACE_ROOT)：{global_root}" not in sys_content
+
+
+def test_no_workdir_uses_global_root():
+    """未设工作目录时，系统提示的 WORKSPACE_ROOT 回退为全局根目录。"""
+    captured = {}
+    global_root = str(llm.config.WORKSPACE_ROOT)
+    client = _stream_client([_chunk(_delta(content="ok"), finish="stop")])
+
+    with patch.object(llm, "AsyncOpenAI", return_value=client), patch.object(
+        llm.config, "DEEPSEEK_API_KEY", "test-key"
+    ), patch.object(llm.db, "get_all_memory", return_value=[]):
+        async def run():
+            async for _ in llm.chat_stream(
+                user_message="hi",
+                conversation_id="c_env_none",
+                history=[],
+            ):
+                pass
+            captured["messages"] = (
+                client.chat.completions.create.call_args.kwargs.get("messages")
+            )
+
+        asyncio.run(run())
+
+    sys_content = captured["messages"][0]["content"]
+    assert f"工作区根目录(WORKSPACE_ROOT)：{global_root}" in sys_content
+
+
 # ---------------- 深度思考 reasoning_content 流式透传 ----------------
 def test_reasoning_event_emitted_for_reasoner():
     """deepseek-reasoner 的 reasoning_content 应以流式 reasoning 事件逐段透传。"""
