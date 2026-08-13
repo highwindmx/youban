@@ -698,6 +698,64 @@ def parse_document(path: str, max_chars: int = _PARSE_MAX_CHARS) -> str:
     return text
 
 
+# ---- 新增 Skill：生成 PowerPoint 演示文稿 ----
+def make_ppt(title: str, slides: list, output: str = "generated.pptx") -> str:
+    """根据标题与每页要点生成 PowerPoint(.pptx) 演示文稿。
+
+    slides: 列表，每项 {"heading": str, "points": [str, ...]}
+    output: 输出文件名（含 .pptx），保存到当前工作目录范围内。
+    """
+    try:
+        from pptx import Presentation
+    except ImportError:
+        return "[错误] 缺少 python-pptx 库（请用 uv add python-pptx 安装）"
+
+    if not isinstance(slides, list) or not slides:
+        return "[错误] slides 必须为非空列表"
+
+    # 规整每页结构，兼容 heading/title、points/bullets 两种键名
+    norm: list[tuple[str, list[str]]] = []
+    for s in slides:
+        if isinstance(s, dict):
+            heading = str(s.get("heading") or s.get("title") or "").strip()
+            pts = s.get("points") or s.get("bullets") or []
+            pts = [str(x).strip() for x in pts if str(x).strip()]
+        elif isinstance(s, str):
+            heading, pts = s.strip(), []
+        else:
+            continue
+        if heading or pts:
+            norm.append((heading, pts))
+    if not norm:
+        return "[错误] 未解析到任何有效幻灯片（每页需含 heading 或 points）"
+
+    try:
+        prs = Presentation()
+        # 标题页
+        s0 = prs.slides.add_slide(prs.slide_layouts[0])
+        s0.shapes.title.text = (title or "未命名演示文稿").strip()
+        # 正文页
+        layout = prs.slide_layouts[1]
+        for heading, pts in norm:
+            slide = prs.slides.add_slide(layout)
+            slide.shapes.title.text = heading
+            body = slide.placeholders[1]
+            tf = body.text_frame
+            tf.clear()
+            first = True
+            for pt in pts:
+                para = tf.paragraphs[0] if first else tf.add_paragraph()
+                first = False
+                para.text = pt
+                para.level = 0
+        out_path = _safe_path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        prs.save(str(out_path))
+        return f"已生成 PPT（共 {len(norm)} 页）-> {_display(out_path)}"
+    except Exception as e:  # noqa: BLE001
+        return f"[错误] 生成 PPT 失败: {e}"
+
+
 # ---- 工具注册表 ----
 TOOLS: dict[str, Callable[..., str]] = {
     "read_file": read_file,
@@ -713,6 +771,7 @@ TOOLS: dict[str, Callable[..., str]] = {
     "remember": remember,
     "forget": forget,
     "parse_document": parse_document,
+    "make_ppt": make_ppt,
 }
 
 
@@ -931,6 +990,40 @@ TOOL_SCHEMAS = [
                     },
                 },
                 "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "make_ppt",
+            "description": "根据标题与每页要点生成 PowerPoint(.pptx) 演示文稿文件。当用户要求制作/生成 PPT、幻灯片、演示文稿、课件时使用。请自行组织内容：设计清晰的标题页与分节页，每页要点简明（3-6 条，每条不宜过长），避免大段文字。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "演示文稿总标题"},
+                    "slides": {
+                        "type": "array",
+                        "description": "幻灯片页列表，每页含 heading(标题) 与 points(要点数组)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "heading": {"type": "string", "description": "本页标题"},
+                                "points": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "本页要点列表（bullet）",
+                                },
+                            },
+                            "required": ["heading", "points"],
+                        },
+                    },
+                    "output": {
+                        "type": "string",
+                        "description": "输出文件名（含 .pptx），相对当前工作目录，默认 generated.pptx",
+                    },
+                },
+                "required": ["title", "slides"],
             },
         },
     },
