@@ -121,5 +121,6 @@ def test_get_config_missing(temp_db):
         "work_dir": "",
         "model": "",
         "persona": "",
+        "disabled_tools": [],
     }
 

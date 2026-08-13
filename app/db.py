@@ -60,6 +60,9 @@ def init_db() -> None:
             conn.execute("ALTER TABLE conversations ADD COLUMN model TEXT")
         if "persona" not in cols:
             conn.execute("ALTER TABLE conversations ADD COLUMN persona TEXT")
+        # 迁移：补上会话级禁用工具列（工具权限开关），存 JSON 列表
+        if "disabled_tools" not in cols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN disabled_tools TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -189,19 +192,28 @@ def get_work_dir(conversation_id: str) -> Optional[str]:
 
 
 def get_conversation_config(conversation_id: str) -> dict:
-    """读取会话级配置（工作目录 / 模型 / 人设），打开历史对话或设置面板时回显。"""
+    """读取会话级配置（工作目录 / 模型 / 人设 / 禁用工具），打开历史对话或设置面板时回显。"""
     conn = _get_conn()
     try:
         row = conn.execute(
-            "SELECT work_dir, model, persona FROM conversations WHERE id=?",
+            "SELECT work_dir, model, persona, disabled_tools FROM conversations WHERE id=?",
             (conversation_id,),
         ).fetchone()
         if not row:
-            return {"work_dir": "", "model": "", "persona": ""}
+            return {"work_dir": "", "model": "", "persona": "", "disabled_tools": []}
+        disabled = row["disabled_tools"]
+        if disabled:
+            try:
+                disabled = json.loads(disabled)
+            except (json.JSONDecodeError, TypeError):
+                disabled = []
+        else:
+            disabled = []
         return {
             "work_dir": row["work_dir"] or "",
             "model": row["model"] or "",
             "persona": row["persona"] or "",
+            "disabled_tools": disabled,
         }
     finally:
         conn.close()
@@ -212,13 +224,18 @@ def set_conversation_config(
     work_dir: Optional[str] = None,
     model: Optional[str] = None,
     persona: Optional[str] = None,
+    disabled_tools: Optional[list] = None,
 ) -> None:
-    """设置会话级配置；空字符串视为清除（回退到全局默认）。"""
+    """设置会话级配置；空字符串视为清除（回退到全局默认）。
+
+    disabled_tools 为被禁用工具名列表，空列表/None 表示全部启用（存 NULL）。
+    """
     conn = _get_conn()
     try:
+        dt = json.dumps(disabled_tools) if disabled_tools else None
         conn.execute(
-            "UPDATE conversations SET work_dir=?, model=?, persona=? WHERE id=?",
-            (work_dir or None, model or None, persona or None, conversation_id),
+            "UPDATE conversations SET work_dir=?, model=?, persona=?, disabled_tools=? WHERE id=?",
+            (work_dir or None, model or None, persona or None, dt, conversation_id),
         )
         conn.commit()
     finally:

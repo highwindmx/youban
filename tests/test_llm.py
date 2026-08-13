@@ -199,3 +199,152 @@ def test_model_default_when_none():
         asyncio.run(run())
 
     assert captured["model"] == "deepseek-chat"
+
+
+# ---------------- 工具权限强制闸 ----------------
+def test_disabled_tool_refused_and_not_executed(tmp_path):
+    """被禁用的工具应被服务端拒绝、绝不执行；其余工具不受影响。"""
+    executed = []
+
+    async def fake_exec(name, args):
+        executed.append(name)
+        return "executed:" + name
+
+    fake_resp = MagicMock()
+    fake_resp.usage = None
+    fake_choice = MagicMock()
+    fake_msg = MagicMock()
+    fake_msg.content = None
+    tc = MagicMock()
+    tc.id = "t1"
+    tc.function.name = "run_command"  # 被禁用的高危工具
+    tc.function.arguments = '{"command":"ls"}'
+    fake_msg.tool_calls = [tc]
+    fake_choice.message = fake_msg
+    fake_resp.choices = [fake_choice]
+
+    with patch.object(llm, "AsyncOpenAI", return_value=MagicMock()), patch.object(
+        llm.config, "DEEPSEEK_API_KEY", "test-key"
+    ), patch.object(llm.db, "get_all_memory", return_value=[]), patch.object(
+        llm.db, "add_message", new=MagicMock()
+    ), patch.object(llm.skills, "execute_tool", new=fake_exec
+    ), patch.object(llm, "_create_with_retry", new=AsyncMock(return_value=fake_resp)):
+
+        async def run():
+            events = []
+            async for ev in llm.chat_stream(
+                user_message="帮我跑个命令",
+                conversation_id="c_gate",
+                history=[],
+                work_dir=str(tmp_path),
+                disabled_tools=["run_command"],
+            ):
+                events.append(ev)
+            return events
+
+        events = asyncio.run(run())
+
+    # 禁用工具未被实际执行
+    assert "run_command" not in executed
+    # 且产出了「已禁用」的拒绝结果
+    joined = "\n".join(events)
+    assert "已禁用" in joined
+    assert "run_command" in joined
+
+
+def test_enabled_tool_still_executed(tmp_path):
+    """未禁用的工具应照常执行。"""
+    executed = []
+
+    async def fake_exec(name, args):
+        executed.append(name)
+        return "ok"
+
+    # 第一次返回工具调用，第二次返回最终文本，避免 agent loop 死循环
+    state = {"n": 0}
+
+    def fake_create(*a, **k):
+        state["n"] += 1
+        resp = MagicMock()
+        resp.usage = None
+        m = MagicMock()
+        if state["n"] == 1:
+            m.content = None
+            tc = MagicMock()
+            tc.id = "t1"
+            tc.function.name = "run_command"
+            tc.function.arguments = '{"command":"ls"}'
+            m.tool_calls = [tc]
+        else:
+            m.content = "完成"
+            m.tool_calls = None
+        resp.choices = [MagicMock(message=m)]
+        return resp
+
+    with patch.object(llm, "AsyncOpenAI", return_value=MagicMock()), patch.object(
+        llm.config, "DEEPSEEK_API_KEY", "test-key"
+    ), patch.object(llm.db, "get_all_memory", return_value=[]), patch.object(
+        llm.db, "add_message", new=MagicMock()
+    ), patch.object(llm.skills, "execute_tool", new=fake_exec
+    ), patch.object(llm, "_create_with_retry", new=AsyncMock(side_effect=fake_create)):
+
+        async def run():
+            async for _ in llm.chat_stream(
+                user_message="帮我跑个命令",
+                conversation_id="c_gate2",
+                history=[],
+                work_dir=str(tmp_path),
+                disabled_tools=[],
+            ):
+                pass
+
+        asyncio.run(run())
+
+    assert "run_command" in executed
+
+
+# ---------------- Tier1 本对话小结注入 ----------------
+def test_tier1_conv_memory_injected(tmp_path):
+    """设了工作目录时，本对话小结应注入系统提示（标签 + 内容）。"""
+    captured = {}
+    wd = tmp_path / "project"
+    wd.mkdir()
+
+    fake_resp = MagicMock()
+    fake_resp.usage = None
+    fake_choice = MagicMock()
+    fake_msg = MagicMock()
+    fake_msg.content = "ok"
+    fake_msg.tool_calls = None
+    fake_choice.message = fake_msg
+    fake_resp.choices = [fake_choice]
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = AsyncMock(return_value=fake_resp)
+
+    with patch.object(llm, "AsyncOpenAI", return_value=fake_client), patch.object(
+        llm.config, "DEEPSEEK_API_KEY", "test-key"
+    ), patch.object(llm.config, "MB_SANDBOX", False), patch.object(
+        llm.db, "get_all_memory", return_value=[]
+    ), patch.object(
+        llm.skills, "read_conv_memory", return_value="PROJECT_MEMORY_MARKER"
+    ):
+
+        async def run():
+            async for _ in llm.chat_stream(
+                user_message="hi",
+                conversation_id="c_tier1",
+                history=[],
+                work_dir=str(wd),
+            ):
+                pass
+            captured["messages"] = (
+                fake_client.chat.completions.create.call_args.kwargs.get("messages")
+            )
+
+        asyncio.run(run())
+
+    sys_content = captured["messages"][0]["content"]
+    assert "[本对话小结（项目记忆" in sys_content
+    assert "PROJECT_MEMORY_MARKER" in sys_content
+

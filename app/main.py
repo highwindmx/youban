@@ -10,10 +10,12 @@ from pathlib import Path
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from openai import AsyncOpenAI
 
 from app import db
+from app import skills
 from app.config import config
-from app.llm import chat_stream
+from app.llm import chat_stream, _create_with_retry
 from app.schemas import ChatRequest, RenameRequest, ConvConfigRequest, WorkDirRequest
 
 # 每个进行中的对话流对应一个中止事件；前端点「停止」即 set 它
@@ -66,6 +68,7 @@ async def history(conversation_id: str):
         "work_dir": cfg["work_dir"],
         "model": cfg["model"],
         "persona": cfg["persona"],
+        "disabled_tools": cfg["disabled_tools"],
         "messages": db.get_history(conversation_id),
     }
 
@@ -79,19 +82,69 @@ async def set_workdir(conversation_id: str, req: WorkDirRequest):
 
 @app.post("/api/conversations/{conversation_id}/config")
 async def set_config(conversation_id: str, req: ConvConfigRequest):
-    """持久化会话级配置：工作目录 / 模型 / 人设（对话设置面板保存时调用）。"""
+    """持久化会话级配置：工作目录 / 模型 / 人设 / 禁用工具（对话设置面板保存时调用）。"""
     db.set_conversation_config(
         conversation_id,
         work_dir=req.work_dir,
         model=req.model,
         persona=req.persona,
+        disabled_tools=req.disabled_tools,
     )
     return {
         "ok": True,
         "work_dir": req.work_dir or "",
         "model": req.model or "",
         "persona": req.persona or "",
+        "disabled_tools": req.disabled_tools or [],
     }
+
+
+@app.post("/api/summarize/{conversation_id}")
+async def summarize_conv(conversation_id: str):
+    """为本对话生成 Markdown 小结并保存到其工作目录（.youban/memories/）。
+
+    触发场景：前端在离开对话（切换/关闭）时经用户确认后调用。需要对话已设置工作目录。
+    """
+    if not config.DEEPSEEK_API_KEY:
+        return {"ok": False, "error": "未配置 DEEPSEEK_API_KEY，无法生成小结。"}
+    cfg = db.get_conversation_config(conversation_id)
+    wd = cfg.get("work_dir")
+    if not wd:
+        return {"ok": False, "error": "本对话未设置工作目录，无法生成项目小结。"}
+    history = db.get_history(conversation_id, limit=80)
+    if not history:
+        return {"ok": False, "error": "对话内容为空，无需小结。"}
+    # 组装对话文本（控制长度，避免超大请求）
+    lines = []
+    for m in history:
+        role = "用户" if m.get("role") == "user" else "助手"
+        c = (m.get("content") or "").strip()
+        if c:
+            lines.append(f"{role}：{c}")
+    dialog = "\n".join(lines)[-8000:]  # 截断，防超长
+    prompt = (
+        "请基于以下对话，生成一份简洁的 Markdown 小结（控制在 350 字以内），"
+        "涵盖：讨论主题、关键决策、确定的项目约定/路径、待办事项。"
+        "只输出小结正文，不要额外解释或前后缀。\n\n" + dialog
+    )
+    try:
+        client = AsyncOpenAI(
+            api_key=config.DEEPSEEK_API_KEY, base_url=config.DEEPSEEK_BASE_URL
+        )
+        resp = await _create_with_retry(
+            client,
+            model=cfg.get("model") or config.DEEPSEEK_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            stream=False,
+            temperature=0.2,
+        )
+        summary = (resp.choices[0].message.content or "").strip()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"生成小结失败: {e}"}
+    if not summary:
+        return {"ok": False, "error": "模型未返回小结内容。"}
+    msg = skills.write_conv_summary(conversation_id, wd, summary)
+    return {"ok": True, "summary": summary, "msg": msg}
 
 
 @app.get("/api/search")
@@ -171,11 +224,12 @@ async def chat(req: ChatRequest):
 
     history = db.get_history(conv_id, limit=40)
 
-    # 读取会话级配置（工作目录 / 模型 / 人设），优先用请求中传入的工作目录，否则用已持久化的
+    # 读取会话级配置（工作目录 / 模型 / 人设 / 禁用工具），优先用请求中传入的工作目录，否则用已持久化的
     cfg = db.get_conversation_config(conv_id)
     conv_work_dir = req.work_dir or cfg["work_dir"] or None
     conv_model = cfg["model"] or None
     conv_persona = cfg["persona"] or None
+    conv_disabled = cfg["disabled_tools"] or []
 
     stop_event = asyncio.Event()
     _STOP_EVENTS[conv_id] = stop_event
@@ -187,7 +241,8 @@ async def chat(req: ChatRequest):
             async for chunk in chat_stream(
                 req.message, conv_id, history, stop_event,
                 images=req.images or None, work_dir=conv_work_dir,
-                model=conv_model, persona=conv_persona
+                model=conv_model, persona=conv_persona,
+                disabled_tools=conv_disabled
             ):
                 yield chunk
                 # 稳健解析：优先采用 done 事件带回的完整文本；未带则回退累加 token

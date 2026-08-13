@@ -131,11 +131,16 @@
   /* 对话设置面板（整合 工作目录 / 模型 / 人设，取代原分散入口） */
   #settingsPanel { position:fixed; inset:0; background:rgba(0,0,0,.35); display:none; align-items:center; justify-content:center; z-index:75; }
   #settingsPanel.show { display:flex; }
-  #settingsPanel .box { background:#fff; border-radius:12px; padding:20px; width:420px; box-shadow:0 10px 30px rgba(0,0,0,.2); }
+  #settingsPanel .box { background:#fff; border-radius:12px; padding:20px; width:420px; max-height:86vh; overflow:auto; box-shadow:0 10px 30px rgba(0,0,0,.2); }
   #settingsPanel .ptitle { font-size:16px; font-weight:600; margin-bottom:14px; display:flex; align-items:center; gap:8px; }
   #settingsPanel .prow { margin-bottom:14px; }
   #settingsPanel .prow > label { display:block; font-size:13px; color:#3a4250; margin-bottom:6px; }
+  #settingsPanel .prow .hint { font-size:11px; color:var(--muted); margin-top:4px; }
   #settingsPanel .prow.col textarea { width:100%; height:auto; min-height:70px; resize:vertical; font-family:inherit; outline:none; }
+  #settingsPanel .toolgrid { display:grid; grid-template-columns:1fr 1fr; gap:6px 14px; }
+  #settingsPanel .toolchk { display:flex; align-items:center; gap:6px; font-size:13px; color:#3a4250; cursor:pointer; }
+  #settingsPanel .toolchk.danger { color:#c0392b; }
+  #settingsPanel .toolchk input { margin:0; }
   #settingsPanel select { width:100%; padding:9px 11px; border:1px solid var(--border); border-radius:8px; font-size:14px; background:#fff; outline:none; }
   #settingsPanel select:focus { border-color:var(--primary); }
   #settingsPanel .pwdir { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
@@ -214,6 +219,11 @@
       <label>人设 / 系统提示（可选）</label>
       <textarea id="setPersona" placeholder="例如：你是一个严谨的 Python 代码审查员，回复时优先指出潜在 bug 与边界情况。"></textarea>
     </div>
+    <div class="prow col">
+      <label>工具权限（取消勾选即在本对话禁用该工具）</label>
+      <div id="setTools" class="toolgrid"></div>
+      <div class="hint">高风险的命令执行 / 代码运行 / 目录删除默认已标红，可按需关闭。</div>
+    </div>
     <div class="pactions">
       <button id="setCancel" type="button">取消</button>
       <button id="setSave" class="primary" type="button">保存</button>
@@ -263,7 +273,45 @@ let curTokens = 0;       // 当前会话累计 token（实时）
 let workDir = '';        // 本对话的工作目录范围（按会话存 localStorage）
 let convModel = '';      // 本对话指定的模型（空=全局默认）
 let convPersona = '';    // 本对话的人设 / 系统提示（空=无）
+let convDisabled = [];   // 本对话禁用的工具名列表（空=全部启用）
 let panelWorkDir = '';   // 设置面板内临时的工作目录（保存前不污染全局）
+
+// 全部可用工具（供设置面板渲染权限复选框；danger=高风险，标红提示）
+const ALL_TOOLS = [
+  {name:'read_file', label:'读取文件', danger:false},
+  {name:'write_file', label:'写入/创建文件', danger:false},
+  {name:'list_dir', label:'列出目录', danger:false},
+  {name:'search_text', label:'搜索文本', danger:false},
+  {name:'run_command', label:'执行命令(终端)', danger:true},
+  {name:'run_code', label:'运行代码', danger:true},
+  {name:'web_search', label:'联网搜索', danger:false},
+  {name:'manage_dir', label:'目录管理(含删除)', danger:true},
+  {name:'rag_index', label:'RAG 建索引', danger:false},
+  {name:'rag_query', label:'RAG 检索', danger:false},
+  {name:'remember', label:'写入记忆', danger:false},
+  {name:'forget', label:'删除记忆', danger:false},
+  {name:'parse_document', label:'解析文档', danger:false},
+  {name:'make_ppt', label:'生成 PPT', danger:false},
+  {name:'git_op', label:'Git 操作', danger:false},
+];
+function renderToolChecks(disabled){
+  const box = document.getElementById('setTools'); box.innerHTML = '';
+  ALL_TOOLS.forEach(t=>{
+    const id = 'tool_' + t.name;
+    const lab = document.createElement('label');
+    lab.className = 'toolchk' + (t.danger ? ' danger' : '');
+    lab.innerHTML = '<input type="checkbox" id="' + id + '" ' + (disabled.includes(t.name) ? '' : 'checked') + '> ' + t.label + (t.danger ? ' ⚠' : '');
+    box.appendChild(lab);
+  });
+}
+function getDisabledTools(){
+  const disabled = [];
+  ALL_TOOLS.forEach(t=>{
+    const el = document.getElementById('tool_' + t.name);
+    if(el && !el.checked) disabled.push(t.name);
+  });
+  return disabled;
+}
 
 function toast(msg){ toastEl.textContent=msg; toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),1800); }
 function scroll(){ log.scrollTop = log.scrollHeight; }
@@ -430,6 +478,13 @@ async function loadConvs(){
 }
 async function switchConv(id){
   if(streaming){ return; } // 正在生成时不允许切换，避免混乱
+  // 离开当前对话前：若其设了工作目录且有内容，询问是否生成小结（确认后才调模型，不阻塞切换）
+  const leavingId = convId;
+  if(leavingId && leavingId !== id && workDir && log.querySelector('.msg')){
+    showModal({msg:'是否生成本对话小结并保存到工作目录？', okText:'生成并保存', okClass:'primary', onOk:()=>{
+      fetch('/api/summarize/'+encodeURIComponent(leavingId), {method:'POST'}).catch(()=>{});
+    }});
+  }
   convId = id; localStorage.setItem('wb_conv', convId);
   pendingImages = []; renderImgChips();
   loadWorkDir();
@@ -443,6 +498,7 @@ async function switchConv(id){
     else { workDir = ''; localStorage.removeItem('wb_wdir_' + convId); }
     convModel = j.model || '';
     convPersona = j.persona || '';
+    convDisabled = j.disabled_tools || [];
     renderWdir();
     (j.messages||[]).forEach(m=>{
       if(m.role==='user'){ addMsg('user', m.content); }
@@ -485,7 +541,7 @@ function resetView(){
   log.innerHTML='<div class="empty-hint">没有对话。点击左上角「＋ 新建对话」开始。</div>';
   pendingFiles=[]; renderChips(); pendingImages=[]; renderImgChips();
   currentTurn=null; currentToolCard=null;
-  workDir=''; convModel=''; convPersona=''; renderWdir();
+  workDir=''; convModel=''; convPersona=''; convDisabled=[]; renderWdir();
   usageTagEl.textContent='';
 }
 async function renameConv(id, oldTitle){
@@ -511,7 +567,7 @@ async function newConv(){
   }
   localStorage.setItem('wb_conv', convId);
   log.innerHTML=''; pendingFiles=[]; renderChips(); pendingImages=[]; renderImgChips(); currentTurn=null; currentToolCard=null;
-  workDir=''; convModel=''; convPersona=''; saveWorkDir();
+  workDir=''; convModel=''; convPersona=''; convDisabled=[]; saveWorkDir();
   await loadConvs();
 }
 // ---------- 对话搜索 ----------
@@ -716,6 +772,7 @@ function openSettings(){
   panelWorkDir = workDir;
   setModel.value = convModel || '';
   setPersona.value = convPersona || '';
+  renderToolChecks(convDisabled);
   updateSettingsWdirText();
   settingsPanel.classList.add('show');
 }
@@ -743,10 +800,12 @@ async function panelPickWdir(){
 function panelClearWdir(){ panelWorkDir = ''; updateSettingsWdirText(); }
 async function saveSettings(){
   if(!convId){ await newConv(); } // 尚无对话时先建一个空会话，便于持久化配置
+  const disabled = getDisabledTools();
   const payload = {
     work_dir: panelWorkDir || null,
     model: setModel.value || null,
-    persona: (setPersona.value || '').trim() || null
+    persona: (setPersona.value || '').trim() || null,
+    disabled_tools: disabled.length ? disabled : null
   };
   try {
     const r = await fetch('/api/conversations/' + encodeURIComponent(convId) + '/config', {
@@ -758,6 +817,7 @@ async function saveSettings(){
   workDir = panelWorkDir; saveWorkDir();
   convModel = setModel.value || '';
   convPersona = (setPersona.value || '').trim();
+  convDisabled = disabled;
   closeSettings();
   toast('已保存对话设置');
 }

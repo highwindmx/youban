@@ -144,3 +144,65 @@ def test_manage_dir_write_delete_roundtrip(fs_root):
     d = skills.manage_dir("delete", "f.txt")
     assert "已删除" in d
     assert not (target / "f.txt").exists()
+
+
+# ---------------- 单对话小结（Tier1）文件读写 ----------------
+def test_conv_summary_write_and_read(tmp_path):
+    wd = tmp_path / "project"
+    skills.write_conv_summary("c1", str(wd), "## 小结\n内容")
+    assert skills.read_conv_memory("c1", str(wd)) == "## 小结\n内容"
+
+
+def test_conv_memory_empty_without_workdir():
+    assert skills.read_conv_memory("c1", "") == ""
+
+
+def test_conv_note_upsert_and_replace(tmp_path):
+    wd = tmp_path / "project"
+    skills.upsert_conv_note("c1", str(wd), "约定", "用4空格")
+    skills.upsert_conv_note("c1", str(wd), "约定", "用2空格")  # 同名覆盖
+    text = (wd / ".youban/memories/c1.notes.md").read_text(encoding="utf-8")
+    assert "用2空格" in text
+    assert "用4空格" not in text
+    # read_conv_memory 应合并小结(.md) + 要点(.notes.md)
+    assert "用2空格" in skills.read_conv_memory("c1", str(wd))
+
+
+def test_conv_note_delete(tmp_path):
+    wd = tmp_path / "project"
+    skills.upsert_conv_note("c1", str(wd), "约定", "用4空格")
+    skills.delete_conv_note("c1", str(wd), "约定")
+    assert "约定" not in skills.read_conv_memory("c1", str(wd))
+
+
+# ---------------- remember scope 路由 ----------------
+def test_remember_global_writes_db(temp_db):
+    skills.set_work_dir(None)
+    skills.set_conv_id(None)
+    skills.remember("姓名", "张三", scope="global")
+    mem = temp_db.get_all_memory()
+    assert any(m["key"] == "姓名" and m["value"] == "张三" for m in mem)
+
+
+def test_remember_project_writes_file(tmp_path):
+    wd = tmp_path / "project"
+    skills.set_work_dir(str(wd))
+    skills.set_conv_id("c9")
+    msg = skills.remember("约定", "用4空格", scope="project")
+    assert "已记录项目记忆" in msg
+    text = (wd / ".youban/memories/c9.notes.md").read_text(encoding="utf-8")
+    assert "用4空格" in text
+    skills.set_work_dir(None)
+    skills.set_conv_id(None)
+
+
+def test_forget_project_deletes_note(tmp_path):
+    wd = tmp_path / "project"
+    skills.set_work_dir(str(wd))
+    skills.set_conv_id("c9")
+    skills.remember("约定", "用4空格", scope="project")
+    skills.forget("约定", scope="project")
+    assert "约定" not in skills.read_conv_memory("c9", str(wd))
+    skills.set_work_dir(None)
+    skills.set_conv_id(None)
+

@@ -30,6 +30,108 @@ _WORK_DIR: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mb_work_dir", default=None
 )
 
+# 会话级「对话 ID」上下文（供 remember(scope=project) 等工具定位本对话小结文件）。
+# 在 chat_stream 的协程里 set，asyncio.to_thread 会复制上下文，工具线程内可读到。
+_CONV_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "mb_conv_id", default=None
+)
+
+
+def set_conv_id(conv_id: str | None) -> None:
+    _CONV_ID.set(conv_id)
+
+
+def get_conv_id() -> str | None:
+    return _CONV_ID.get()
+
+
+# 单对话小结文件存放位置（相对工作目录），天然只在设了工作目录的对话才存在
+_MEM_SUBDIR = ".youban/memories"
+
+
+def _conv_paths(conversation_id: str, work_dir: str):
+    """返回 (目录, 小结文件.md, 记忆要点文件.notes.md)。均位于 work_dir 内。"""
+    base = Path(work_dir).resolve() / _MEM_SUBDIR
+    return base, base / f"{conversation_id}.md", base / f"{conversation_id}.notes.md"
+
+
+def write_conv_summary(conversation_id: str, work_dir: str, text: str) -> str:
+    """覆盖写入本对话的自动小结（Markdown）。"""
+    if not work_dir:
+        return "[错误] 未设置工作目录，无法保存小结"
+    base, f, _ = _conv_paths(conversation_id, work_dir)
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        f.write_text(text, encoding="utf-8")
+        return f"已保存本对话小结到：{f}"
+    except Exception as e:  # noqa: BLE001
+        return f"[错误] 写入小结失败: {e}"
+
+
+def read_conv_memory(conversation_id: str, work_dir: str) -> str:
+    """读取本对话的全部项目记忆（自动小结 + 记忆要点），用于注入系统提示。"""
+    if not work_dir:
+        return ""
+    _, f, nf = _conv_paths(conversation_id, work_dir)
+    try:
+        parts = []
+        if f.exists():
+            s = f.read_text(encoding="utf-8").strip()
+            if s:
+                parts.append(s)
+        if nf.exists():
+            n = nf.read_text(encoding="utf-8").strip()
+            if n:
+                parts.append(n)
+        return "\n\n".join(parts)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def upsert_conv_note(conversation_id: str, work_dir: str, key: str, value: str) -> str:
+    """在记忆要点文件中按 key 写入/覆盖一条项目记忆（## key 段落）。"""
+    if not work_dir:
+        return "[错误] 未设置工作目录，无法保存项目记忆（请用全局 remember）"
+    base, _, nf = _conv_paths(conversation_id, work_dir)
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        content = nf.read_text(encoding="utf-8") if nf.exists() else ""
+        block = f"## {key}\n\n{value}\n"
+        # 替换已存在的同名 ## key 段落，否则追加
+        pattern = re.compile(
+            r"(?ms)^##\s*" + re.escape(key) + r"\s*$.*?(?=^##\s|\Z)"
+        )
+        if pattern.search(content):
+            content = pattern.sub(block.rstrip("\n") + "\n", content)
+        else:
+            content = (content.rstrip("\n") + "\n\n" + block) if content.strip() else block
+        nf.write_text(content, encoding="utf-8")
+        return f"已记录项目记忆：{key}"
+    except Exception as e:  # noqa: BLE001
+        return f"[错误] 写入项目记忆失败: {e}"
+
+
+def delete_conv_note(conversation_id: str, work_dir: str, key: str) -> str:
+    """从记忆要点文件中删除一条项目记忆（按 key）。"""
+    if not work_dir:
+        return "[错误] 未设置工作目录"
+    base, _, nf = _conv_paths(conversation_id, work_dir)
+    try:
+        if not nf.exists():
+            return f"未找到项目记忆：{key}"
+        content = nf.read_text(encoding="utf-8")
+        pattern = re.compile(
+            r"(?ms)^##\s*" + re.escape(key) + r"\s*$.*?(?=^##\s|\Z)"
+        )
+        new = pattern.sub("", content).strip()
+        if new:
+            nf.write_text(new + "\n", encoding="utf-8")
+        else:
+            nf.unlink()
+        return f"已删除项目记忆：{key}"
+    except Exception as e:  # noqa: BLE001
+        return f"[错误] 删除项目记忆失败: {e}"
+
 
 def set_work_dir(path: str | None) -> None:
     _WORK_DIR.set(path)
@@ -497,22 +599,41 @@ def rag_query(query: str, top_k: int = 5) -> str:
 
 
 # ---- 新增 Skill：跨会话长期记忆 ----
-def remember(key: str, value: str) -> str:
-    """把一条跨会话长期记忆写入本地知识库（key 唯一，重复会覆盖）。
+def remember(key: str, value: str, scope: str = "global") -> str:
+    """写入一条长期记忆。
 
-    适合保存：用户偏好、项目约定、常用路径、个人信息等，
-    使助手在任意新对话中都能回忆起这些信息。
+    - scope="global"（默认）：写入跨对话的全局经验库（key 唯一，重复覆盖），
+      适合用户级偏好、跨项目约定。
+    - scope="project"：写入「本对话小结」所在工作目录的要点文件，
+      仅在该工作目录（项目）内可见，随项目走；未设工作目录时回退全局。
     """
     if not key or not key.strip():
         return "[错误] remember 需要非空 key"
+    scope = (scope or "global").lower()
+    if scope == "project":
+        wd = get_work_dir()
+        cid = get_conv_id()
+        if wd and cid:
+            return upsert_conv_note(cid, wd, key.strip(), (value or "").strip())
+        return "[提示] 本对话未设置工作目录，已改为保存到全局记忆。"
     db.upsert_memory(key.strip(), (value or "").strip())
     return f"已记住：{key.strip()} = {(value or '').strip()}"
 
 
-def forget(key: str) -> str:
-    """删除一条长期记忆（按 key）。"""
+def forget(key: str, scope: str = "global") -> str:
+    """删除一条长期记忆（按 key）。
+
+    scope="project" 时删除本对话工作目录内的项目记忆要点；否则删全局记忆。
+    """
     if not key or not key.strip():
         return "[错误] forget 需要非空 key"
+    scope = (scope or "global").lower()
+    if scope == "project":
+        wd = get_work_dir()
+        cid = get_conv_id()
+        if wd and cid:
+            return delete_conv_note(cid, wd, key.strip())
+        return "[提示] 本对话未设置工作目录，无法删除项目记忆。"
     db.delete_memory(key.strip())
     return f"已遗忘：{key.strip()}"
 
@@ -1037,12 +1158,13 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "remember",
-            "description": "把一条跨会话长期记忆写入本地知识库（key 唯一，重复会覆盖）。用于保存用户偏好、项目约定、常用路径、个人信息等，使助手在任意新对话中都能回忆。",
+            "description": "写入一条长期记忆。scope=global（默认）写入跨对话的全局经验库（用户级偏好/跨项目约定）；scope=project 写入本对话工作目录内的项目记忆（随项目走，仅该工作目录可见）。用于保存用户偏好、项目约定、常用路径、个人信息等。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "key": {"type": "string", "description": "记忆键名（唯一标识，如 '用户姓名'、'项目约定'）"},
                     "value": {"type": "string", "description": "记忆内容"},
+                    "scope": {"type": "string", "enum": ["global", "project"], "description": "存储范围：global=跨对话全局；project=本对话工作目录内（默认 global）"},
                 },
                 "required": ["key", "value"],
             },
@@ -1052,11 +1174,12 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "forget",
-            "description": "删除一条长期记忆（按 key）。当用户明确表示不再需要某条记忆时使用。",
+            "description": "删除一条长期记忆（按 key）。scope=project 时删除本对话工作目录内的项目记忆要点，否则删除全局记忆。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "key": {"type": "string", "description": "要删除的记忆键名"},
+                    "scope": {"type": "string", "enum": ["global", "project"], "description": "存储范围：global=跨对话全局；project=本对话工作目录内（默认 global）"},
                 },
                 "required": ["key"],
             },

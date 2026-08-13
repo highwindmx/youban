@@ -213,11 +213,13 @@ async def chat_stream(
     work_dir: str | None = None,
     model: str | None = None,
     persona: str | None = None,
+    disabled_tools: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """驱动一次完整对话，流式产出 SSE 事件。
 
     stop_event 被 set 时立即中止（用于前端「停止」按钮）。
     work_dir 为本次对话指定的「工作目录范围」，非空时覆盖全局根目录。
+    disabled_tools 为本对话禁用的工具名列表（服务端强制校验）。
     """
 
     if not config.DEEPSEEK_API_KEY:
@@ -244,14 +246,16 @@ async def chat_stream(
         except Exception:  # noqa: BLE001
             work_dir = None
     skills.set_work_dir(work_dir)
+    skills.set_conv_id(conversation_id)
     try:
         async for chunk in _chat_inner(
             user_message, conversation_id, history, stop_event, images, work_dir,
-            model, persona
+            model, persona, disabled_tools
         ):
             yield chunk
     finally:
         skills.set_work_dir(None)
+        skills.set_conv_id(None)
 
 
 async def _chat_inner(
@@ -263,6 +267,7 @@ async def _chat_inner(
     work_dir: str | None,
     model: str | None = None,
     persona: str | None = None,
+    disabled_tools: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     async def _should_stop() -> bool:
         if stop_event is None:
@@ -274,14 +279,24 @@ async def _chat_inner(
     )
     # 含图片时若配置了视觉模型则切换；否则用会话指定模型，再回退全局默认
     model = model or config.DEEPSEEK_MODEL
-    # 注入跨会话长期记忆（用户偏好/项目约定/个人信息等）
+    # 注入长期记忆：Tier2 全局经验库 + Tier1 本对话项目小结（若有工作目录）
     memory = db.get_all_memory()
+    tier1 = skills.read_conv_memory(conversation_id, work_dir) if work_dir else ""
     mem_text = ""
-    if memory:
-        lines = "\n".join(f"- {m['key']}: {m['value']}" for m in memory)
+    if memory or tier1:
+        sections = []
+        if memory:
+            lines = "\n".join(f"- {m['key']}: {m['value']}" for m in memory)
+            sections.append(
+                "[跨对话长期记忆（全局经验/偏好，适用于任意对话）]\n" + lines
+            )
+        if tier1:
+            sections.append(
+                "[本对话小结（项目记忆，仅本工作目录内可见）]\n" + tier1
+            )
         mem_text = (
-            "\n\n[长期记忆]\n" + lines +
-            "\n（这是跨会话长期记住的用户信息/偏好/约定；如有更新请调用 remember/forget 工具。）"
+            "\n\n" + "\n\n".join(sections) +
+            "\n（如需更新请调用 remember/forget 工具；scope=global 存全局，scope=project 存本项目。）"
         )
     # 会话级工作目录范围（如设定，则文件操作以它为根）
     wd_text = ""
@@ -396,6 +411,24 @@ async def _chat_inner(
             except json.JSONDecodeError:
                 args = {}
             yield _event("tool", {"name": name, "args": args})
+            # 服务端强制闸：本对话禁用的工具直接拒绝，绝不执行（防模型绕过 UI 调用）
+            disabled = disabled_tools or []
+            if name in disabled:
+                result = (
+                    f"[已禁用] 本对话已关闭工具「{name}」，未执行。"
+                    f"如需启用请在对话设置（⚙）中勾选该工具。"
+                )
+                yield _event("tool_result", {"name": name, "result": result})
+                tool_results.append(result)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": name,
+                        "content": result,
+                    }
+                )
+                continue
             result = await skills.execute_tool(name, args)
             yield _event("tool_result", {"name": name, "result": result[:2000]})
             tool_results.append(result[:4000])
