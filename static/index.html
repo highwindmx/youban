@@ -119,10 +119,10 @@
   .chip span.x { cursor:pointer; color:#7a93c9; }
   #dropOverlay { position:fixed; inset:0; background:rgba(47,109,246,.08); border:3px dashed var(--primary); display:none; align-items:center; justify-content:center; font-size:18px; color:var(--primary); z-index:50; }
   #dropOverlay.show { display:flex; }
-  .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#323a45; color:#fff; padding:8px 16px; border-radius:8px; font-size:13px; opacity:0; transition:opacity .3s; z-index:60; }
+  .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#323a45; color:#fff; padding:8px 16px; border-radius:8px; font-size:13px; opacity:0; transition:opacity .3s; z-index:90; }
   .toast.show { opacity:1; }
   /* 通用弹窗（替代 window.confirm / prompt，桌面版更可靠） */
-  #modal { position:fixed; inset:0; background:rgba(0,0,0,.35); display:none; align-items:center; justify-content:center; z-index:70; }
+  #modal { position:fixed; inset:0; background:rgba(0,0,0,.35); display:none; align-items:center; justify-content:center; z-index:80; }
   #modal.show { display:flex; }
   #modal .box { background:#fff; border-radius:12px; padding:20px; width:320px; box-shadow:0 10px 30px rgba(0,0,0,.2); }
   #modal .mmsg { font-size:14px; margin-bottom:12px; line-height:1.5; }
