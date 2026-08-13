@@ -69,6 +69,7 @@ async def history(conversation_id: str):
         "model": cfg["model"],
         "persona": cfg["persona"],
         "disabled_tools": cfg["disabled_tools"],
+        "show_reasoning": cfg["show_reasoning"],
         "messages": db.get_history(conversation_id),
     }
 
@@ -82,13 +83,14 @@ async def set_workdir(conversation_id: str, req: WorkDirRequest):
 
 @app.post("/api/conversations/{conversation_id}/config")
 async def set_config(conversation_id: str, req: ConvConfigRequest):
-    """持久化会话级配置：工作目录 / 模型 / 人设 / 禁用工具（对话设置面板保存时调用）。"""
+    """持久化会话级配置：工作目录 / 模型 / 人设 / 禁用工具 / 思考流显示（对话设置面板保存时调用）。"""
     db.set_conversation_config(
         conversation_id,
         work_dir=req.work_dir,
         model=req.model,
         persona=req.persona,
         disabled_tools=req.disabled_tools,
+        show_reasoning=req.show_reasoning,
     )
     return {
         "ok": True,
@@ -96,6 +98,7 @@ async def set_config(conversation_id: str, req: ConvConfigRequest):
         "model": req.model or "",
         "persona": req.persona or "",
         "disabled_tools": req.disabled_tools or [],
+        "show_reasoning": req.show_reasoning if req.show_reasoning is not None else True,
     }
 
 

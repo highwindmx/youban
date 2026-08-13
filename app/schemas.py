@@ -17,9 +17,10 @@ class WorkDirRequest(BaseModel):
 
 
 class ConvConfigRequest(BaseModel):
-    """对话级配置：工作目录 / 模型 / 人设 / 禁用工具（均可空，空字符串表示清除）。"""
+    """对话级配置：工作目录 / 模型 / 人设 / 禁用工具 / 思考流显示（均可空，空字符串表示清除）。"""
 
     work_dir: str | None = None
     model: str | None = None
     persona: str | None = None
     disabled_tools: list[str] | None = None
+    show_reasoning: bool | None = None

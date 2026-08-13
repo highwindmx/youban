@@ -63,6 +63,11 @@ def init_db() -> None:
         # 迁移：补上会话级禁用工具列（工具权限开关），存 JSON 列表
         if "disabled_tools" not in cols:
             conn.execute("ALTER TABLE conversations ADD COLUMN disabled_tools TEXT")
+        # 迁移：补上「实时展示思考过程」开关（仅影响深度思考模型的思考流显示，默认开启）
+        if "show_reasoning" not in cols:
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN show_reasoning INTEGER DEFAULT 1"
+            )
         # 迁移：为 messages 补上 reasoning 列（深度思考模型的思考过程，供回放/导出）
         msg_cols = [r["name"] for r in conn.execute("PRAGMA table_info(messages)")]
         if "reasoning" not in msg_cols:
@@ -200,15 +205,18 @@ def get_work_dir(conversation_id: str) -> Optional[str]:
 
 
 def get_conversation_config(conversation_id: str) -> dict:
-    """读取会话级配置（工作目录 / 模型 / 人设 / 禁用工具），打开历史对话或设置面板时回显。"""
+    """读取会话级配置（工作目录 / 模型 / 人设 / 禁用工具 / 思考流显示），打开历史对话或设置面板时回显。"""
     conn = _get_conn()
     try:
         row = conn.execute(
-            "SELECT work_dir, model, persona, disabled_tools FROM conversations WHERE id=?",
+            "SELECT work_dir, model, persona, disabled_tools, show_reasoning FROM conversations WHERE id=?",
             (conversation_id,),
         ).fetchone()
         if not row:
-            return {"work_dir": "", "model": "", "persona": "", "disabled_tools": []}
+            return {
+                "work_dir": "", "model": "", "persona": "",
+                "disabled_tools": [], "show_reasoning": True,
+            }
         disabled = row["disabled_tools"]
         if disabled:
             try:
@@ -217,11 +225,14 @@ def get_conversation_config(conversation_id: str) -> dict:
                 disabled = []
         else:
             disabled = []
+        # 思考流显示开关：NULL/0 视为关闭，其余（含默认 1）视为开启
+        show_reasoning = row["show_reasoning"] not in (0, "0", None)
         return {
             "work_dir": row["work_dir"] or "",
             "model": row["model"] or "",
             "persona": row["persona"] or "",
             "disabled_tools": disabled,
+            "show_reasoning": show_reasoning,
         }
     finally:
         conn.close()
@@ -233,17 +244,20 @@ def set_conversation_config(
     model: Optional[str] = None,
     persona: Optional[str] = None,
     disabled_tools: Optional[list] = None,
+    show_reasoning: Optional[bool] = None,
 ) -> None:
     """设置会话级配置；空字符串视为清除（回退到全局默认）。
 
     disabled_tools 为被禁用工具名列表，空列表/None 表示全部启用（存 NULL）。
+    show_reasoning 为是否实时展示深度思考模型的思考过程；None 时回退默认开启。
     """
     conn = _get_conn()
     try:
         dt = json.dumps(disabled_tools) if disabled_tools else None
+        sr_val = 1 if show_reasoning is None else (1 if show_reasoning else 0)
         conn.execute(
-            "UPDATE conversations SET work_dir=?, model=?, persona=?, disabled_tools=? WHERE id=?",
-            (work_dir or None, model or None, persona or None, dt, conversation_id),
+            "UPDATE conversations SET work_dir=?, model=?, persona=?, disabled_tools=?, show_reasoning=? WHERE id=?",
+            (work_dir or None, model or None, persona or None, dt, sr_val, conversation_id),
         )
         conn.commit()
     finally:

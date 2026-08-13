@@ -126,11 +126,29 @@ def test_conversation_config_roundtrip(temp_db):
     assert cfg2["work_dir"] == ""
     assert cfg2["model"] == "deepseek-chat"
     assert cfg2["persona"] == ""
+    # show_reasoning 默认开启
+    assert cfg2["show_reasoning"] is True
     # list_conversations 应回传 model / persona
     rows = temp_db.list_conversations()
     c = next(r for r in rows if r["id"] == "c10")
     assert c["model"] == "deepseek-chat"
     assert c["persona"] == ""
+
+
+def test_show_reasoning_toggle(temp_db):
+    """show_reasoning 应可独立开关且回读正确；显式传 None 时回退默认开启。"""
+    temp_db.create_conversation("cSR")
+    # 新建会话默认开启
+    assert temp_db.get_conversation_config("cSR")["show_reasoning"] is True
+    # 显式关闭
+    temp_db.set_conversation_config("cSR", show_reasoning=False)
+    assert temp_db.get_conversation_config("cSR")["show_reasoning"] is False
+    # 显式开启
+    temp_db.set_conversation_config("cSR", show_reasoning=True)
+    assert temp_db.get_conversation_config("cSR")["show_reasoning"] is True
+    # 仅传 show_reasoning（其余字段 None=清除）时，show_reasoning 仍正确写入
+    temp_db.set_conversation_config("cSR", show_reasoning=False)
+    assert temp_db.get_conversation_config("cSR")["show_reasoning"] is False
 
 
 def test_get_config_missing(temp_db):
@@ -139,5 +157,6 @@ def test_get_config_missing(temp_db):
         "model": "",
         "persona": "",
         "disabled_tools": [],
+        "show_reasoning": True,
     }
 

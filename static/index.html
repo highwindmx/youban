@@ -143,6 +143,8 @@
   #settingsPanel .prow { margin-bottom:14px; }
   #settingsPanel .prow > label { display:block; font-size:13px; color:#3a4250; margin-bottom:6px; }
   #settingsPanel .prow .hint { font-size:11px; color:var(--muted); margin-top:4px; }
+  #settingsPanel .prow .chkrow { display:flex; align-items:center; gap:6px; font-size:13px; color:#3a4250; font-weight:600; cursor:pointer; }
+  #settingsPanel .prow .chkrow input { margin:0; }
   #settingsPanel .prow.col textarea { width:100%; height:auto; min-height:70px; resize:vertical; font-family:inherit; outline:none; }
   #settingsPanel .toolgrid { display:grid; grid-template-columns:1fr 1fr; gap:6px 14px; }
   #settingsPanel .toolchk { display:flex; align-items:center; gap:6px; font-size:13px; color:#3a4250; cursor:pointer; }
@@ -222,6 +224,10 @@
         <option value="deepseek-reasoner">deepseek-reasoner</option>
       </select>
     </div>
+    <div class="prow">
+      <label class="chkrow"><input type="checkbox" id="setShowReasoning" checked> 实时展示思考过程（流式）</label>
+      <div class="hint">仅对 deepseek-reasoner 等深度思考模型生效；关闭后只看结论、不显示思考流（思考内容仍会存档，可随时重新开启查看历史思考）。</div>
+    </div>
     <div class="prow col">
       <label>人设 / 系统提示（可选）</label>
       <textarea id="setPersona" placeholder="例如：你是一个严谨的 Python 代码审查员，回复时优先指出潜在 bug 与边界情况。"></textarea>
@@ -262,6 +268,7 @@ const modalCancel = document.getElementById('modalCancel');
 const settingsPanel = document.getElementById('settingsPanel');
 const setWdirText = document.getElementById('setWdirText');
 const setModel = document.getElementById('setModel');
+const setShowReasoning = document.getElementById('setShowReasoning');
 const setPersona = document.getElementById('setPersona');
 const setWdirPick = document.getElementById('setWdirPick');
 const setWdirClear = document.getElementById('setWdirClear');
@@ -281,6 +288,7 @@ let workDir = '';        // 本对话的工作目录范围（按会话存 localS
 let convModel = '';      // 本对话指定的模型（空=全局默认）
 let convPersona = '';    // 本对话的人设 / 系统提示（空=无）
 let convDisabled = [];   // 本对话禁用的工具名列表（空=全部启用）
+let convShowReasoning = true; // 本对话是否实时展示深度思考模型的思考过程（默认开启）
 let panelWorkDir = '';   // 设置面板内临时的工作目录（保存前不污染全局）
 
 // 全部可用工具（供设置面板渲染权限复选框；danger=高风险，标红提示）
@@ -506,6 +514,7 @@ async function switchConv(id){
     convModel = j.model || '';
     convPersona = j.persona || '';
     convDisabled = j.disabled_tools || [];
+    convShowReasoning = (j.show_reasoning !== false); // 默认开启
     renderWdir();
     (j.messages||[]).forEach(m=>{
       if(m.role==='user'){ addMsg('user', m.content); }
@@ -518,8 +527,8 @@ async function switchConv(id){
         } else {
           addMsg('assistant', m.content);
         }
-        // 历史回放：若该助手消息带有深度思考过程，补一个可折叠思考块
-        if(m.reasoning && m.reasoning.trim()){ addReasoningBlock(m.reasoning); }
+        // 历史回放：若该助手消息带有深度思考过程，且本对话开启了思考流显示，补一个可折叠思考块
+        if(convShowReasoning && m.reasoning && m.reasoning.trim()){ addReasoningBlock(m.reasoning); }
       }
     });
   } catch(e){}
@@ -550,7 +559,7 @@ function resetView(){
   log.innerHTML='<div class="empty-hint">没有对话。点击左上角「＋ 新建对话」开始。</div>';
   pendingFiles=[]; renderChips(); pendingImages=[]; renderImgChips();
   currentTurn=null; currentToolCard=null;
-  workDir=''; convModel=''; convPersona=''; convDisabled=[]; renderWdir();
+  workDir=''; convModel=''; convPersona=''; convDisabled=[]; convShowReasoning=true; renderWdir();
   usageTagEl.textContent='';
 }
 async function renameConv(id, oldTitle){
@@ -576,7 +585,7 @@ async function newConv(){
   }
   localStorage.setItem('wb_conv', convId);
   log.innerHTML=''; pendingFiles=[]; renderChips(); pendingImages=[]; renderImgChips(); currentTurn=null; currentToolCard=null;
-  workDir=''; convModel=''; convPersona=''; convDisabled=[]; saveWorkDir();
+  workDir=''; convModel=''; convPersona=''; convDisabled=[]; convShowReasoning=true; saveWorkDir();
   await loadConvs();
 }
 // ---------- 对话搜索 ----------
@@ -815,6 +824,7 @@ function openSettings(){
   panelWorkDir = workDir;
   setModel.value = convModel || '';
   setPersona.value = convPersona || '';
+  setShowReasoning.checked = convShowReasoning;
   renderToolChecks(convDisabled);
   updateSettingsWdirText();
   settingsPanel.classList.add('show');
@@ -844,11 +854,13 @@ function panelClearWdir(){ panelWorkDir = ''; updateSettingsWdirText(); }
 async function saveSettings(){
   if(!convId){ await newConv(); } // 尚无对话时先建一个空会话，便于持久化配置
   const disabled = getDisabledTools();
+  const showReasoning = setShowReasoning.checked;
   const payload = {
     work_dir: panelWorkDir || null,
     model: setModel.value || null,
     persona: (setPersona.value || '').trim() || null,
-    disabled_tools: disabled.length ? disabled : null
+    disabled_tools: disabled.length ? disabled : null,
+    show_reasoning: showReasoning
   };
   try {
     const r = await fetch('/api/conversations/' + encodeURIComponent(convId) + '/config', {
@@ -861,6 +873,7 @@ async function saveSettings(){
   convModel = setModel.value || '';
   convPersona = (setPersona.value || '').trim();
   convDisabled = disabled;
+  convShowReasoning = showReasoning;
   closeSettings();
   toast('已保存对话设置');
 }
@@ -959,7 +972,7 @@ async function send(){
         const m = ev.match(/^event: (\w+)\ndata: (.*)$/s); if(!m) continue;
         const kind=m[1], data=JSON.parse(m[2]);
         if(kind==='token'){ acc+=data.text; bubble.innerHTML=renderMarkdown(acc); scroll(); }
-        else if(kind==='reasoning'){ addReasoningBlock(data.text); }
+        else if(kind==='reasoning'){ if(convShowReasoning) addReasoningBlock(data.text); }
         else if(kind==='tool'){ currentToolCard = addTool(data.name, data.args, undefined, 'running'); }
         else if(kind==='tool_result'){
           if(currentToolCard){
