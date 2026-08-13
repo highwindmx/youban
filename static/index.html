@@ -275,8 +275,19 @@ const setWdirClear = document.getElementById('setWdirClear');
 const setSave = document.getElementById('setSave');
 const setCancel = document.getElementById('setCancel');
 // 桌面环境（pywebview）暴露了 window.pywebview.api，可拿到真实本地路径
-const isDesktop = typeof window.pywebview !== 'undefined' && window.pywebview.api;
-if (isDesktop) pickBtns.classList.add('show');
+// pywebview 的 js_api 是异步注入的：脚本解析时 api 可能尚未就绪。
+// 若在此一次性把 isDesktop 判死，桌面壳会被误判为「非桌面」，导致工作目录选择
+// 退化成手动录入路径、且主界面「选择目录」按钮不显示。改为：解析时先探一次，
+// 并监听 pywebviewready 事件刷新，确保桌面原生目录选择器始终可用。
+let isDesktop = !!(window.pywebview && window.pywebview.api);
+function refreshDesktop(){
+  isDesktop = !!(window.pywebview && window.pywebview.api);
+  if(isDesktop) pickBtns.classList.add('show');
+}
+refreshDesktop();
+if(!(window.pywebview && window.pywebview.api)){
+  window.addEventListener('pywebviewready', refreshDesktop, { once:true });
+}
 let convId = localStorage.getItem('wb_conv') || ('c_' + Math.random().toString(36).slice(2));
 let convs = [];
 let pendingFiles = [];   // 拖拽/上传/选择进来的文件/目录路径
@@ -839,7 +850,7 @@ function updateSettingsWdirText(){
   }
 }
 async function panelPickWdir(){
-  if(isDesktop){
+  if(window.pywebview && window.pywebview.api){
     try {
       const paths = await window.pywebview.api.pick_dir();
       if(paths && paths.length){ panelWorkDir = paths[0]; updateSettingsWdirText(); }
