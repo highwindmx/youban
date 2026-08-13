@@ -93,3 +93,33 @@ def test_memory(temp_db):
     assert vals == ["小红"]
     temp_db.delete_memory("名字")
     assert temp_db.get_all_memory() == []
+
+
+def test_conversation_config_roundtrip(temp_db):
+    temp_db.create_conversation(
+        "c10", title="t", work_dir="D:/w", model="deepseek-reasoner", persona="你是审查员"
+    )
+    cfg = temp_db.get_conversation_config("c10")
+    assert cfg["work_dir"] == "D:/w"
+    assert cfg["model"] == "deepseek-reasoner"
+    assert cfg["persona"] == "你是审查员"
+    # 清空（空字符串视为清除，回退默认）
+    temp_db.set_conversation_config("c10", work_dir="", model="deepseek-chat", persona="")
+    cfg2 = temp_db.get_conversation_config("c10")
+    assert cfg2["work_dir"] == ""
+    assert cfg2["model"] == "deepseek-chat"
+    assert cfg2["persona"] == ""
+    # list_conversations 应回传 model / persona
+    rows = temp_db.list_conversations()
+    c = next(r for r in rows if r["id"] == "c10")
+    assert c["model"] == "deepseek-chat"
+    assert c["persona"] == ""
+
+
+def test_get_config_missing(temp_db):
+    assert temp_db.get_conversation_config("nope") == {
+        "work_dir": "",
+        "model": "",
+        "persona": "",
+    }
+

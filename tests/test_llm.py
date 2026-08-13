@@ -5,8 +5,10 @@
 - _trim_to_budget：超长对话按 token 预算从最老处滑动截断，保留系统提示、
   最近两轮，且不破坏 tool/assistant(tool_calls) 配对（不留孤儿 tool）。
 - _approx_tokens：粗略 token 估算。
+- 会话级 persona / model 注入：chat_stream 把人设写入系统提示、把模型覆盖全局默认。
 """
-from unittest.mock import patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app import llm
 
@@ -119,3 +121,81 @@ def test_trim_no_orphan_tool():
             assert out[i - 1]["role"] == "assistant" and out[i - 1].get("tool_calls")
     assert out[0]["role"] == "system"
     assert out[-1]["role"] == "user"
+
+
+# ---------------- 会话级 persona / model 注入 ----------------
+def test_persona_and_model_injected():
+    """chat_stream 应把 persona 写入系统提示、把 model 覆盖全局默认。"""
+    captured = {}
+
+    fake_resp = MagicMock()
+    fake_resp.usage = None
+    fake_choice = MagicMock()
+    fake_msg = MagicMock()
+    fake_msg.content = "ok"
+    fake_msg.tool_calls = None
+    fake_choice.message = fake_msg
+    fake_resp.choices = [fake_choice]
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = AsyncMock(return_value=fake_resp)
+
+    with patch.object(llm, "AsyncOpenAI", return_value=fake_client), patch.object(
+        llm.config, "DEEPSEEK_API_KEY", "test-key"
+    ), patch.object(llm.db, "get_all_memory", return_value=[]):
+
+        async def run():
+            async for _ in llm.chat_stream(
+                user_message="hi",
+                conversation_id="c1",
+                history=[],
+                model="deepseek-reasoner",
+                persona="你是一个严谨的 Python 代码审查员",
+            ):
+                pass
+            kwargs = fake_client.chat.completions.create.call_args.kwargs
+            captured["model"] = kwargs.get("model")
+            captured["messages"] = kwargs.get("messages")
+
+        asyncio.run(run())
+
+    assert captured["model"] == "deepseek-reasoner"
+    sys_content = captured["messages"][0]["content"]
+    assert "[本对话人设 / 角色设定]" in sys_content
+    assert "你是一个严谨的 Python 代码审查员" in sys_content
+
+
+def test_model_default_when_none():
+    """未指定 model 时回落到全局默认模型。"""
+    captured = {}
+
+    fake_resp = MagicMock()
+    fake_resp.usage = None
+    fake_choice = MagicMock()
+    fake_msg = MagicMock()
+    fake_msg.content = "ok"
+    fake_msg.tool_calls = None
+    fake_choice.message = fake_msg
+    fake_resp.choices = [fake_choice]
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = AsyncMock(return_value=fake_resp)
+
+    with patch.object(llm, "AsyncOpenAI", return_value=fake_client), patch.object(
+        llm.config, "DEEPSEEK_API_KEY", "test-key"
+    ), patch.object(llm.config, "DEEPSEEK_MODEL", "deepseek-chat"), patch.object(
+        llm.db, "get_all_memory", return_value=[]
+    ):
+
+        async def run():
+            async for _ in llm.chat_stream(
+                user_message="hi", conversation_id="c2", history=[]
+            ):
+                pass
+            captured["model"] = fake_client.chat.completions.create.call_args.kwargs.get(
+                "model"
+            )
+
+        asyncio.run(run())
+
+    assert captured["model"] == "deepseek-chat"

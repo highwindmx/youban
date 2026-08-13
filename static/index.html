@@ -128,6 +128,25 @@
   /* 搜索高亮 */
   mark.search-hl { background:#fff3a3; color:inherit; border-radius:2px; padding:0 1px; }
   .empty-hint { color:var(--muted); text-align:center; margin-top:48px; font-size:14px; }
+  /* 对话设置面板（整合 工作目录 / 模型 / 人设，取代原分散入口） */
+  #settingsPanel { position:fixed; inset:0; background:rgba(0,0,0,.35); display:none; align-items:center; justify-content:center; z-index:75; }
+  #settingsPanel.show { display:flex; }
+  #settingsPanel .box { background:#fff; border-radius:12px; padding:20px; width:420px; box-shadow:0 10px 30px rgba(0,0,0,.2); }
+  #settingsPanel .ptitle { font-size:16px; font-weight:600; margin-bottom:14px; display:flex; align-items:center; gap:8px; }
+  #settingsPanel .prow { margin-bottom:14px; }
+  #settingsPanel .prow > label { display:block; font-size:13px; color:#3a4250; margin-bottom:6px; }
+  #settingsPanel .prow.col textarea { width:100%; height:auto; min-height:70px; resize:vertical; font-family:inherit; outline:none; }
+  #settingsPanel select { width:100%; padding:9px 11px; border:1px solid var(--border); border-radius:8px; font-size:14px; background:#fff; outline:none; }
+  #settingsPanel select:focus { border-color:var(--primary); }
+  #settingsPanel .pwdir { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  #settingsPanel .pwdir .pwdir-text { flex:1; min-width:0; font-size:13px; color:#1a3a8f; background:#eaf1ff; border:1px solid #d4e2ff; border-radius:8px; padding:7px 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #settingsPanel .pwdir .pwdir-text.empty { color:var(--muted); background:#f4f6f8; border-color:var(--border); }
+  #settingsPanel .pbtn { font-size:12px; padding:6px 12px; border:1px solid var(--border); background:#fff; border-radius:8px; cursor:pointer; color:#3a4250; }
+  #settingsPanel .pbtn:hover { background:#eef1f5; }
+  #settingsPanel .pbtn.danger { color:#e5484d; border-color:#f3c2c4; }
+  #settingsPanel .pactions { display:flex; justify-content:flex-end; gap:10px; margin-top:8px; }
+  #settingsPanel .pactions button { padding:7px 16px; border-radius:8px; font-size:13px; cursor:pointer; border:1px solid var(--border); background:#fff; }
+  #settingsPanel .pactions button.primary { background:var(--primary); color:#fff; border-color:var(--primary); }
 </style>
 </head>
 <body>
@@ -149,7 +168,7 @@
   <div id="imgChip"></div>
   <div id="inputbar">
     <div class="row">
-      <button id="dirBtn" class="dirbtn" title="指定本对话的工作目录范围">＋</button>
+      <button id="dirBtn" class="dirbtn" title="对话设置（工作目录 / 模型 / 人设）">⚙</button>
       <textarea id="msg" placeholder="说点什么… (Enter 发送 / Shift+Enter 换行 / 可拖拽本地文件到此处上传)"></textarea>
       <button class="send" id="send">发送</button>
     </div>
@@ -167,6 +186,37 @@
     <div class="mactions">
       <button id="modalCancel">取消</button>
       <button id="modalOk" class="primary">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 对话设置面板：整合 工作目录 / 模型 / 人设，取代原先分散的入口 -->
+<div id="settingsPanel">
+  <div class="box">
+    <div class="ptitle">⚙ 对话设置</div>
+    <div class="prow">
+      <label>工作目录（文件操作的根范围）</label>
+      <div class="pwdir">
+        <span id="setWdirText" class="pwdir-text empty">未设置</span>
+        <button id="setWdirPick" class="pbtn" type="button">选择/修改</button>
+        <button id="setWdirClear" class="pbtn danger" type="button">清除</button>
+      </div>
+    </div>
+    <div class="prow">
+      <label>模型</label>
+      <select id="setModel">
+        <option value="">默认 (deepseek-chat)</option>
+        <option value="deepseek-chat">deepseek-chat</option>
+        <option value="deepseek-reasoner">deepseek-reasoner</option>
+      </select>
+    </div>
+    <div class="prow col">
+      <label>人设 / 系统提示（可选）</label>
+      <textarea id="setPersona" placeholder="例如：你是一个严谨的 Python 代码审查员，回复时优先指出潜在 bug 与边界情况。"></textarea>
+    </div>
+    <div class="pactions">
+      <button id="setCancel" type="button">取消</button>
+      <button id="setSave" class="primary" type="button">保存</button>
     </div>
   </div>
 </div>
@@ -191,6 +241,15 @@ const modalMsg = document.getElementById('modalMsg');
 const modalInput = document.getElementById('modalInput');
 const modalOk = document.getElementById('modalOk');
 const modalCancel = document.getElementById('modalCancel');
+// 对话设置面板
+const settingsPanel = document.getElementById('settingsPanel');
+const setWdirText = document.getElementById('setWdirText');
+const setModel = document.getElementById('setModel');
+const setPersona = document.getElementById('setPersona');
+const setWdirPick = document.getElementById('setWdirPick');
+const setWdirClear = document.getElementById('setWdirClear');
+const setSave = document.getElementById('setSave');
+const setCancel = document.getElementById('setCancel');
 // 桌面环境（pywebview）暴露了 window.pywebview.api，可拿到真实本地路径
 const isDesktop = typeof window.pywebview !== 'undefined' && window.pywebview.api;
 if (isDesktop) pickBtns.classList.add('show');
@@ -202,6 +261,9 @@ let currentToolCard = null; // 当前工具卡片引用（替代脆弱的 :last-
 let pendingImages = [];  // 图片 base64（多模态）
 let curTokens = 0;       // 当前会话累计 token（实时）
 let workDir = '';        // 本对话的工作目录范围（按会话存 localStorage）
+let convModel = '';      // 本对话指定的模型（空=全局默认）
+let convPersona = '';    // 本对话的人设 / 系统提示（空=无）
+let panelWorkDir = '';   // 设置面板内临时的工作目录（保存前不污染全局）
 
 function toast(msg){ toastEl.textContent=msg; toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),1800); }
 function scroll(){ log.scrollTop = log.scrollHeight; }
@@ -379,6 +441,8 @@ async function switchConv(id){
     // 服务端是工作目录的权威来源：打开历史对话时回显，并与本地 localStorage 同步
     if(j.work_dir){ workDir = j.work_dir; localStorage.setItem('wb_wdir_' + convId, workDir); }
     else { workDir = ''; localStorage.removeItem('wb_wdir_' + convId); }
+    convModel = j.model || '';
+    convPersona = j.persona || '';
     renderWdir();
     (j.messages||[]).forEach(m=>{
       if(m.role==='user'){ addMsg('user', m.content); }
@@ -421,7 +485,7 @@ function resetView(){
   log.innerHTML='<div class="empty-hint">没有对话。点击左上角「＋ 新建对话」开始。</div>';
   pendingFiles=[]; renderChips(); pendingImages=[]; renderImgChips();
   currentTurn=null; currentToolCard=null;
-  workDir=''; renderWdir();
+  workDir=''; convModel=''; convPersona=''; renderWdir();
   usageTagEl.textContent='';
 }
 async function renameConv(id, oldTitle){
@@ -447,7 +511,7 @@ async function newConv(){
   }
   localStorage.setItem('wb_conv', convId);
   log.innerHTML=''; pendingFiles=[]; renderChips(); pendingImages=[]; renderImgChips(); currentTurn=null; currentToolCard=null;
-  workDir=''; saveWorkDir();
+  workDir=''; convModel=''; convPersona=''; saveWorkDir();
   await loadConvs();
 }
 // ---------- 对话搜索 ----------
@@ -636,28 +700,75 @@ function renderWdir(){
   dirBtn.classList.add('active');
   const chip = document.createElement('div'); chip.className = 'chip';
   chip.innerHTML = '📁 <span class="name">工作目录: ' + escapeHtml(workDir) + '</span> <span class="x">✕</span>';
-  chip.querySelector('.x').onclick = ()=>{ workDir = ''; saveWorkDir(); };
+  // 点 chip 主体打开对话设置面板（消除 ＋/chip/header 三处分散入口）
+  chip.onclick = (e)=>{ if(e.target.classList.contains('x')) return; openSettings(); };
+  chip.querySelector('.x').onclick = (e)=>{ e.stopPropagation(); workDir = ''; saveWorkDir(); };
   wdirChipEl.appendChild(chip);
   if(hw){
     hw.textContent = '📁 ' + workDir;
-    hw.title = '本对话工作目录范围：' + workDir + '（点击更改，或点下方 ✕ 清除）';
+    hw.title = '本对话工作目录：' + workDir + '（点击打开对话设置）';
     hw.classList.add('show');
   }
 }
-async function pickWorkDir(){
+// ---------- 对话设置面板（整合 工作目录 / 模型 / 人设）----------
+function openSettings(){
+  // 把当前会话配置载入面板（工作目录走临时变量，保存前不污染全局）
+  panelWorkDir = workDir;
+  setModel.value = convModel || '';
+  setPersona.value = convPersona || '';
+  updateSettingsWdirText();
+  settingsPanel.classList.add('show');
+}
+function updateSettingsWdirText(){
+  if(panelWorkDir){
+    setWdirText.textContent = panelWorkDir;
+    setWdirText.classList.remove('empty');
+  } else {
+    setWdirText.textContent = '未设置';
+    setWdirText.classList.add('empty');
+  }
+}
+async function panelPickWdir(){
   if(isDesktop){
     try {
       const paths = await window.pywebview.api.pick_dir();
-      if(paths && paths.length){ workDir = paths[0]; saveWorkDir(); }
+      if(paths && paths.length){ panelWorkDir = paths[0]; updateSettingsWdirText(); }
     } catch(e){ toast('选择失败：' + e); }
   } else {
     showModal({msg:'指定本对话的工作目录范围（粘贴一个本地目录的绝对路径，文件操作将以它为根）：',
-      input:true, value:workDir, placeholder:'例如 D:\\Projects\\myapp', okText:'确定',
-      onOk:(val)=>{ if(val){ workDir = val.trim(); saveWorkDir(); } }});
+      input:true, value:panelWorkDir, placeholder:'例如 D:\\Projects\\myapp', okText:'确定',
+      onOk:(val)=>{ if(val){ panelWorkDir = val.trim(); updateSettingsWdirText(); } }});
   }
 }
-dirBtn.onclick = pickWorkDir;
-document.getElementById('headerWdir').onclick = pickWorkDir;
+function panelClearWdir(){ panelWorkDir = ''; updateSettingsWdirText(); }
+async function saveSettings(){
+  if(!convId){ await newConv(); } // 尚无对话时先建一个空会话，便于持久化配置
+  const payload = {
+    work_dir: panelWorkDir || null,
+    model: setModel.value || null,
+    persona: (setPersona.value || '').trim() || null
+  };
+  try {
+    const r = await fetch('/api/conversations/' + encodeURIComponent(convId) + '/config', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    if(!r.ok){ toast('保存失败：' + r.status); return; }
+  } catch(e){ toast('保存失败：' + e); return; }
+  // 同步到全局与本地缓存，并刷新 chip / 顶栏
+  workDir = panelWorkDir; saveWorkDir();
+  convModel = setModel.value || '';
+  convPersona = (setPersona.value || '').trim();
+  closeSettings();
+  toast('已保存对话设置');
+}
+function closeSettings(){ settingsPanel.classList.remove('show'); }
+setWdirPick.onclick = panelPickWdir;
+setWdirClear.onclick = panelClearWdir;
+setSave.onclick = saveSettings;
+setCancel.onclick = closeSettings;
+settingsPanel.onclick = (e)=>{ if(e.target === settingsPanel) closeSettings(); };
+dirBtn.onclick = openSettings;
+document.getElementById('headerWdir').onclick = openSettings;
 // ---------- 桌面版：原生文件/目录选择（真实绝对路径）----------
 async function pick(kind){
   if(!window.pywebview || !window.pywebview.api) return;

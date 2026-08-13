@@ -211,6 +211,8 @@ async def chat_stream(
     stop_event: asyncio.Event | None = None,
     images: list[str] | None = None,
     work_dir: str | None = None,
+    model: str | None = None,
+    persona: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """驱动一次完整对话，流式产出 SSE 事件。
 
@@ -244,7 +246,8 @@ async def chat_stream(
     skills.set_work_dir(work_dir)
     try:
         async for chunk in _chat_inner(
-            user_message, conversation_id, history, stop_event, images, work_dir
+            user_message, conversation_id, history, stop_event, images, work_dir,
+            model, persona
         ):
             yield chunk
     finally:
@@ -258,6 +261,8 @@ async def _chat_inner(
     stop_event: asyncio.Event | None,
     images: list[str] | None,
     work_dir: str | None,
+    model: str | None = None,
+    persona: str | None = None,
 ) -> AsyncGenerator[str, None]:
     async def _should_stop() -> bool:
         if stop_event is None:
@@ -267,8 +272,8 @@ async def _chat_inner(
     client = AsyncOpenAI(
         api_key=config.DEEPSEEK_API_KEY, base_url=config.DEEPSEEK_BASE_URL
     )
-    # 含图片时若配置了视觉模型则切换；否则沿用默认模型（图片会被忽略，前端会提示）
-    model = config.DEEPSEEK_MODEL
+    # 含图片时若配置了视觉模型则切换；否则用会话指定模型，再回退全局默认
+    model = model or config.DEEPSEEK_MODEL
     # 注入跨会话长期记忆（用户偏好/项目约定/个人信息等）
     memory = db.get_all_memory()
     mem_text = ""
@@ -292,8 +297,15 @@ async def _chat_inner(
     sk = builtin_skills.detect_skill(user_message)
     if sk:
         skill_text = "\n\n" + sk
+    # 会话级人设 / 角色设定（对话设置面板配置），非空时注入系统提示，使其在本对话全程生效
+    persona_text = ""
+    if persona and persona.strip():
+        persona_text = (
+            "\n\n[本对话人设 / 角色设定]\n" + persona.strip() +
+            "\n（请在本对话中始终遵循以上角色设定，除非用户明确要求切换。）"
+        )
     messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT + ENV_CONTEXT + wd_text + skill_text + mem_text}
+        {"role": "system", "content": SYSTEM_PROMPT + persona_text + ENV_CONTEXT + wd_text + skill_text + mem_text}
     ]
     # 历史消息：还原 assistant(tool_calls) + tool 配对，并回喂上一轮工具结果
     messages.extend(_expand_history(history))

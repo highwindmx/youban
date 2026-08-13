@@ -55,20 +55,30 @@ def init_db() -> None:
         # 迁移：补上会话级工作目录范围列（按会话持久化，打开历史对话时回显）
         if "work_dir" not in cols:
             conn.execute("ALTER TABLE conversations ADD COLUMN work_dir TEXT")
+        # 迁移：补上会话级配置列（模型 / 人设），供对话设置面板持久化
+        if "model" not in cols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN model TEXT")
+        if "persona" not in cols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN persona TEXT")
         conn.commit()
     finally:
         conn.close()
 
 
 def create_conversation(
-    conversation_id: str, title: str = "", work_dir: Optional[str] = None
+    conversation_id: str,
+    title: str = "",
+    work_dir: Optional[str] = None,
+    model: Optional[str] = None,
+    persona: Optional[str] = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn = _get_conn()
     try:
         conn.execute(
-            "INSERT OR IGNORE INTO conversations(id, title, created_at, updated_at, work_dir) VALUES(?,?,?,?,?)",
-            (conversation_id, title, now, now, work_dir),
+            "INSERT OR IGNORE INTO conversations(id, title, created_at, updated_at, work_dir, model, persona) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (conversation_id, title, now, now, work_dir, model, persona),
         )
         conn.commit()
     finally:
@@ -127,7 +137,7 @@ def list_conversations(limit: int = 100) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT c.id, c.title, c.created_at, c.updated_at, "
-            "COALESCE(c.usage_total, 0) AS usage_total, c.work_dir, "
+            "COALESCE(c.usage_total, 0) AS usage_total, c.work_dir, c.model, c.persona, "
             "(SELECT content FROM messages m WHERE m.conversation_id=c.id "
             "ORDER BY m.id ASC LIMIT 1) AS first_msg "
             "FROM conversations c ORDER BY c.updated_at DESC LIMIT ?",
@@ -144,6 +154,8 @@ def list_conversations(limit: int = 100) -> list[dict]:
                     "updated_at": r["updated_at"],
                     "usage_total": r["usage_total"],
                     "work_dir": r["work_dir"] or "",
+                    "model": r["model"] or "",
+                    "persona": r["persona"] or "",
                 }
             )
         return out
@@ -172,6 +184,43 @@ def get_work_dir(conversation_id: str) -> Optional[str]:
             "SELECT work_dir FROM conversations WHERE id=?", (conversation_id,)
         ).fetchone()
         return row["work_dir"] if row and row["work_dir"] else None
+    finally:
+        conn.close()
+
+
+def get_conversation_config(conversation_id: str) -> dict:
+    """读取会话级配置（工作目录 / 模型 / 人设），打开历史对话或设置面板时回显。"""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT work_dir, model, persona FROM conversations WHERE id=?",
+            (conversation_id,),
+        ).fetchone()
+        if not row:
+            return {"work_dir": "", "model": "", "persona": ""}
+        return {
+            "work_dir": row["work_dir"] or "",
+            "model": row["model"] or "",
+            "persona": row["persona"] or "",
+        }
+    finally:
+        conn.close()
+
+
+def set_conversation_config(
+    conversation_id: str,
+    work_dir: Optional[str] = None,
+    model: Optional[str] = None,
+    persona: Optional[str] = None,
+) -> None:
+    """设置会话级配置；空字符串视为清除（回退到全局默认）。"""
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "UPDATE conversations SET work_dir=?, model=?, persona=? WHERE id=?",
+            (work_dir or None, model or None, persona or None, conversation_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 

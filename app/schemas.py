@@ -14,3 +14,11 @@ class RenameRequest(BaseModel):
 
 class WorkDirRequest(BaseModel):
     work_dir: str | None = None
+
+
+class ConvConfigRequest(BaseModel):
+    """对话级配置：工作目录 / 模型 / 人设（均可空，空字符串表示清除）。"""
+
+    work_dir: str | None = None
+    model: str | None = None
+    persona: str | None = None

@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app import db
 from app.config import config
 from app.llm import chat_stream
-from app.schemas import ChatRequest, RenameRequest, WorkDirRequest
+from app.schemas import ChatRequest, RenameRequest, ConvConfigRequest, WorkDirRequest
 
 # 每个进行中的对话流对应一个中止事件；前端点「停止」即 set 它
 _STOP_EVENTS: dict[str, asyncio.Event] = {}
@@ -61,8 +61,11 @@ async def create_conv(conversation_id: str | None = None):
 
 @app.get("/api/history/{conversation_id}")
 async def history(conversation_id: str):
+    cfg = db.get_conversation_config(conversation_id)
     return {
-        "work_dir": db.get_work_dir(conversation_id) or "",
+        "work_dir": cfg["work_dir"],
+        "model": cfg["model"],
+        "persona": cfg["persona"],
         "messages": db.get_history(conversation_id),
     }
 
@@ -72,6 +75,23 @@ async def set_workdir(conversation_id: str, req: WorkDirRequest):
     """持久化会话级工作目录范围（前端 pick 后调用，打开历史对话时回显）。"""
     db.set_conversation_work_dir(conversation_id, req.work_dir or None)
     return {"ok": True, "work_dir": req.work_dir or ""}
+
+
+@app.post("/api/conversations/{conversation_id}/config")
+async def set_config(conversation_id: str, req: ConvConfigRequest):
+    """持久化会话级配置：工作目录 / 模型 / 人设（对话设置面板保存时调用）。"""
+    db.set_conversation_config(
+        conversation_id,
+        work_dir=req.work_dir,
+        model=req.model,
+        persona=req.persona,
+    )
+    return {
+        "ok": True,
+        "work_dir": req.work_dir or "",
+        "model": req.model or "",
+        "persona": req.persona or "",
+    }
 
 
 @app.get("/api/search")
@@ -151,6 +171,12 @@ async def chat(req: ChatRequest):
 
     history = db.get_history(conv_id, limit=40)
 
+    # 读取会话级配置（工作目录 / 模型 / 人设），优先用请求中传入的工作目录，否则用已持久化的
+    cfg = db.get_conversation_config(conv_id)
+    conv_work_dir = req.work_dir or cfg["work_dir"] or None
+    conv_model = cfg["model"] or None
+    conv_persona = cfg["persona"] or None
+
     stop_event = asyncio.Event()
     _STOP_EVENTS[conv_id] = stop_event
 
@@ -160,7 +186,8 @@ async def chat(req: ChatRequest):
         try:
             async for chunk in chat_stream(
                 req.message, conv_id, history, stop_event,
-                images=req.images or None, work_dir=req.work_dir or None
+                images=req.images or None, work_dir=conv_work_dir,
+                model=conv_model, persona=conv_persona
             ):
                 yield chunk
                 # 稳健解析：优先采用 done 事件带回的完整文本；未带则回退累加 token
