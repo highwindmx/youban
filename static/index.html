@@ -125,6 +125,9 @@
   #modal button { padding:7px 16px; border-radius:8px; font-size:13px; cursor:pointer; border:1px solid var(--border); background:#fff; }
   #modal button.primary { background:var(--primary); color:#fff; border-color:var(--primary); }
   #modal button.danger { background:var(--danger); color:#fff; border-color:var(--danger); }
+  /* 搜索高亮 */
+  mark.search-hl { background:#fff3a3; color:inherit; border-radius:2px; padding:0 1px; }
+  .empty-hint { color:var(--muted); text-align:center; margin-top:48px; font-size:14px; }
 </style>
 </head>
 <body>
@@ -403,10 +406,23 @@ async function delConv(id){
       const r = await fetch('/api/conversations/'+id, {method:'DELETE'});
       if(!r.ok){ toast('删除失败：'+r.status); return; }
     } catch(e){ toast('删除失败：'+e); return; }
-    if(convId===id){ await newConv(); }
+    const wasActive = (convId===id);
+    // 删除当前对话后不再自动新建：有剩余则跳到最近一条，否则清空视图
+    if(wasActive){ convId=''; localStorage.removeItem('wb_conv'); }
     await loadConvs();
+    if(wasActive && convs.length){ await switchConv(convs[0].id); }
+    else if(wasActive && !convs.length){ resetView(); }
     toast('已删除');
   });
+}
+// 清空当前视图（没有选中的对话时的空状态），不创建新对话
+function resetView(){
+  convId=''; localStorage.removeItem('wb_conv');
+  log.innerHTML='<div class="empty-hint">没有对话。点击左上角「＋ 新建对话」开始。</div>';
+  pendingFiles=[]; renderChips(); pendingImages=[]; renderImgChips();
+  currentTurn=null; currentToolCard=null;
+  workDir=''; renderWdir();
+  usageTagEl.textContent='';
 }
 async function renameConv(id, oldTitle){
   showModal({msg:'重命名对话', input:true, value:oldTitle, placeholder:'输入新名称', okText:'保存',
@@ -435,24 +451,60 @@ async function newConv(){
   await loadConvs();
 }
 // ---------- 对话搜索 ----------
+// 在对话框内高亮检索词（仅遍历气泡文本节点，不影响头像/复制按钮），并滚动到首个匹配
+function clearHighlights(){
+  log.querySelectorAll('mark.search-hl').forEach(m=>{
+    const p=m.parentNode; if(!p) return;
+    p.replaceChild(document.createTextNode(m.textContent), m);
+    p.normalize();
+  });
+}
+function highlightInLog(q){
+  clearHighlights();
+  if(!q) return;
+  const lc = q.toLowerCase();
+  let firstMatch = null;
+  log.querySelectorAll('.bubble').forEach(bubble=>{
+    const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT, null);
+    const nodes = []; let n; while(n = walker.nextNode()) nodes.push(n);
+    nodes.forEach(node=>{
+      const txt = node.nodeValue; if(!txt) return;
+      const lower = txt.toLowerCase(); let idx = lower.indexOf(lc); if(idx === -1) return;
+      const frag = document.createDocumentFragment(); let last = 0;
+      while(idx !== -1){
+        if(idx > last) frag.appendChild(document.createTextNode(txt.slice(last, idx)));
+        const mark = document.createElement('mark'); mark.className='search-hl';
+        mark.textContent = txt.slice(idx, idx + q.length);
+        frag.appendChild(mark); if(!firstMatch) firstMatch = mark;
+        last = idx + q.length; idx = lower.indexOf(lc, last);
+      }
+      if(last < txt.length) frag.appendChild(document.createTextNode(txt.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    });
+  });
+  if(firstMatch) firstMatch.scrollIntoView({behavior:'smooth', block:'center'});
+}
 async function doSearch(){
   const q = searchBox.value.trim();
-  if(!q){ loadConvs(); return; }
+  if(!q){ clearHighlights(); loadConvs(); return; }
   try {
     const r = await fetch('/api/search?q='+encodeURIComponent(q));
     const j = await r.json();
     const results = j.results||[];
     convListEl.innerHTML='';
-    if(!results.length){ convListEl.innerHTML='<div style="padding:12px;color:var(--muted);font-size:12px">无匹配结果</div>'; return; }
+    if(!results.length){ convListEl.innerHTML='<div style="padding:12px;color:var(--muted);font-size:12px">无匹配结果</div>'; clearHighlights(); return; }
     const map = new Map();
     results.forEach(r=>{ if(!map.has(r.conversation_id)) map.set(r.conversation_id,{id:r.conversation_id,title:r.title,snippets:[]}); map.get(r.conversation_id).snippets.push(r); });
     map.forEach(c=>{
       const el=document.createElement('div'); el.className='conv'+(c.id===convId?' active':'');
       const snip=c.snippets[0].snippet;
       el.innerHTML = '<div>'+escapeHtml(c.title)+'</div><div class="time">'+escapeHtml(snip)+'</div>';
-      el.onclick=()=>{ switchConv(c.id); searchBox.value=''; };
+      el.onclick = async ()=>{ const term=searchBox.value; searchBox.value=''; await switchConv(c.id); highlightInLog(term); };
       convListEl.appendChild(el);
     });
+    // 当前对话若命中，直接在对话框内高亮（不切换）
+    if(results.some(r=>r.conversation_id===convId)) highlightInLog(q);
+    else clearHighlights();
   } catch(e){}
 }
 searchBox.addEventListener('input', ()=>{ clearTimeout(searchBox._t); searchBox._t=setTimeout(doSearch, 250); });
@@ -561,6 +613,7 @@ function loadWorkDir(){
   renderWdir();
 }
 function saveWorkDir(){
+  if(!convId){ renderWdir(); return; } // 空状态下不写工作目录
   if(workDir) localStorage.setItem('wb_wdir_' + convId, workDir);
   else localStorage.removeItem('wb_wdir_' + convId);
   renderWdir();
@@ -669,6 +722,7 @@ async function stopGen(){
   try { await fetch('/api/chat/stop?conversation_id='+convId, {method:'POST'}); } catch(e){}
 }
 async function send(){
+  if(!convId){ await newConv(); } // 空状态先建一个对话再发送
   const text = ta.value.trim();
   if(!text && pendingFiles.length===0) return;
   if(streaming) return;
