@@ -50,6 +50,10 @@
   .msg.user .bubble { background:#eaf1ff; border-color:#d4e2ff; white-space:pre-wrap; }
   .msg.assistant .bubble { white-space:pre-wrap; }
   .msg.user { flex-direction:row-reverse; }
+  .bubble-wrap { position:relative; max-width:680px; }
+  .bubble-copy { position:absolute; top:4px; right:4px; font-size:11px; padding:2px 8px; border:1px solid var(--border); background:#fff; border-radius:6px; cursor:pointer; color:#3a4250; opacity:0; transition:opacity .15s; z-index:2; }
+  .bubble-wrap:hover .bubble-copy { opacity:1; }
+  .bubble-copy:hover { background:#eef1f5; }
   /* Markdown 渲染（assistant 气泡） */
   .bubble.md { white-space: normal; }
   .bubble.md h1, .bubble.md h2, .bubble.md h3, .bubble.md h4 { margin:.5em 0 .3em; line-height:1.3; }
@@ -273,17 +277,45 @@ function renderMarkdown(src){
   return html;
 }
 
-// ---------- 复制按钮（事件委托）----------
+// ---------- 复制（事件委托 + 兼容 WebView2 的 execCommand 兜底）----------
+function fallbackCopy(text){
+  try {
+    const ta=document.createElement('textarea');
+    ta.value=text; ta.style.position='fixed'; ta.style.top='-9999px';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok=document.execCommand('copy'); document.body.removeChild(ta);
+    return ok;
+  } catch(e){ return false; }
+}
+function copyText(text){
+  return new Promise(resolve=>{
+    try {
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(()=>resolve(true)).catch(()=>resolve(fallbackCopy(text)));
+      } else {
+        resolve(fallbackCopy(text));
+      }
+    } catch(e){ resolve(fallbackCopy(text)); }
+  });
+}
 log.addEventListener('click', e=>{
-  const btn = e.target.closest && e.target.closest('.copy-btn');
+  const btn = e.target.closest && e.target.closest('.copy-btn, .bubble-copy');
   if(!btn) return;
-  const wrap = btn.closest('.codewrap') || btn.closest('.tool-res');
-  const code = wrap ? wrap.querySelector('pre') : null;
-  if(code && navigator.clipboard){
-    navigator.clipboard.writeText(code.textContent).then(()=>{
-      const t=btn.textContent; btn.textContent='已复制'; setTimeout(()=>btn.textContent=t,1200);
-    }).catch(()=>{});
+  let text='';
+  if(btn.classList.contains('bubble-copy')){
+    const bw = btn.closest('.bubble-wrap');
+    const b = bw ? bw.querySelector('.bubble') : null;
+    text = b ? b.innerText : '';
+  } else {
+    const wrap = btn.closest('.codewrap') || btn.closest('.tool-res');
+    const code = wrap ? wrap.querySelector('pre') : null;
+    text = code ? code.textContent : '';
   }
+  if(!text) return;
+  copyText(text).then(ok=>{
+    if(ok){ const t=btn.textContent; btn.textContent='已复制'; setTimeout(()=>btn.textContent=t,1200); }
+    else { toast('复制失败'); }
+  });
 });
 
 // ---------- 通用弹窗（替代 confirm/prompt）----------
@@ -460,10 +492,13 @@ document.getElementById('newBtn').onclick = ()=>{ if(!streaming) newConv(); };
 function addMsg(role, text=''){
   const wrap = document.createElement('div'); wrap.className='msg '+role;
   const av = document.createElement('div'); av.className='avatar'; av.textContent = role==='user'?'我':'AI';
+  const bubbleWrap = document.createElement('div'); bubbleWrap.className='bubble-wrap';
   const bubble = document.createElement('div'); bubble.className='bubble'+(role==='assistant'?' md':'');
+  const cb = document.createElement('button'); cb.className='bubble-copy'; cb.type='button'; cb.textContent='复制';
+  bubbleWrap.appendChild(bubble); bubbleWrap.appendChild(cb);
   if(role==='assistant'){ bubble.innerHTML = renderMarkdown(text); currentTurn = wrap; }
   else { bubble.textContent = text; currentTurn = null; }
-  wrap.appendChild(av); wrap.appendChild(bubble); log.appendChild(wrap); scroll();
+  wrap.appendChild(av); wrap.appendChild(bubbleWrap); log.appendChild(wrap); scroll();
   return bubble;
 }
 function statusOf(result){

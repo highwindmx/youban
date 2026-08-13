@@ -206,11 +206,6 @@ async def chat_stream(
     work_dir 为本次对话指定的「工作目录范围」，非空时覆盖全局根目录。
     """
 
-    async def _should_stop() -> bool:
-        if stop_event is None:
-            return False
-        return stop_event.is_set()
-
     if not config.DEEPSEEK_API_KEY:
         yield _event(
             "error",
@@ -252,6 +247,11 @@ async def _chat_inner(
     images: list[str] | None,
     work_dir: str | None,
 ) -> AsyncGenerator[str, None]:
+    async def _should_stop() -> bool:
+        if stop_event is None:
+            return False
+        return stop_event.is_set()
+
     client = AsyncOpenAI(
         api_key=config.DEEPSEEK_API_KEY, base_url=config.DEEPSEEK_BASE_URL
     )
