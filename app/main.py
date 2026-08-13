@@ -236,6 +236,7 @@ async def chat(req: ChatRequest):
 
     async def event_gen():
         final_text = ""
+        final_reasoning = ""
         got_done = False
         try:
             async for chunk in chat_stream(
@@ -261,6 +262,13 @@ async def chat(req: ChatRequest):
                         final_text += data.get("text", "")
                     except Exception:  # noqa: BLE001
                         pass
+                elif chunk.startswith("event: reasoning"):
+                    # 深度思考模型的思考过程：累积后与最终回答一并落库
+                    try:
+                        data = json.loads(chunk.split("data: ", 1)[1])
+                        final_reasoning += data.get("text", "")
+                    except Exception:  # noqa: BLE001
+                        pass
                 elif chunk.startswith("event: usage"):
                     try:
                         data = json.loads(chunk.split("data: ", 1)[1])
@@ -271,7 +279,10 @@ async def chat(req: ChatRequest):
             _STOP_EVENTS.pop(conv_id, None)
             # 落库守卫：仅当存在非空（去空白）文本时才写入，避免空消息
             if final_text and final_text.strip():
-                db.add_message(conv_id, "assistant", final_text)
+                db.add_message(
+                    conv_id, "assistant", final_text,
+                    reasoning=final_reasoning.strip() or None,
+                )
             yield ""
 
     return StreamingResponse(

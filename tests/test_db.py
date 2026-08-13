@@ -38,6 +38,23 @@ def test_get_history_with_tool_calls(temp_db):
     assert isinstance(hist[0]["tool_calls"], list)
 
 
+def test_reasoning_roundtrip(temp_db):
+    """深度思考模型的思考过程应随消息持久化并回读；无 reasoning 时不返回该键。"""
+    temp_db.create_conversation("cRe")
+    # 普通消息不应带 reasoning 字段
+    temp_db.add_message("cRe", "assistant", "普通回答")
+    hist = temp_db.get_history("cRe")
+    assert "reasoning" not in hist[0]
+    # 带 reasoning 的回答应回读
+    temp_db.add_message("cRe", "assistant", "深思熟虑后的回答", reasoning="让我先分析…")
+    hist = temp_db.get_history("cRe")
+    assert hist[1]["reasoning"] == "让我先分析…"
+    # 空字符串 reasoning 视为无，不入库
+    temp_db.add_message("cRe", "assistant", "又一条", reasoning="")
+    hist = temp_db.get_history("cRe")
+    assert "reasoning" not in hist[2]
+
+
 def test_rename(temp_db):
     temp_db.create_conversation("c4")
     temp_db.rename_conversation("c4", "新名字")

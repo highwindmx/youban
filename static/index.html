@@ -518,6 +518,8 @@ async function switchConv(id){
         } else {
           addMsg('assistant', m.content);
         }
+        // 历史回放：若该助手消息带有深度思考过程，补一个可折叠思考块
+        if(m.reasoning && m.reasoning.trim()){ addReasoningBlock(m.reasoning); }
       }
     });
   } catch(e){}
@@ -646,7 +648,13 @@ exportBtn.onclick = async ()=>{
     msgs.forEach(m=>{
       if(m.role==='user') md += '## 我\n\n'+m.content+'\n\n';
       else if(m.role==='assistant'){
-        md += '## AI\n\n'+(m.content||'')+'\n';
+        if(m.reasoning && m.reasoning.trim()){
+          md += '## AI\n\n> 🧠 **思考过程**\n\n';
+          md += '> ' + m.reasoning.trim().split('\n').join('\n> ') + '\n\n';
+          if(m.content) md += (m.content||'')+'\n';
+        } else {
+          md += '## AI\n\n'+(m.content||'')+'\n';
+        }
         if(m.tool_calls) m.tool_calls.forEach(t=>{
           md += '\n> 🔧 `'+t.function.name+'` '+t.function.arguments+'\n';
           if(t.result) md += '> 结果: '+String(t.result).slice(0,2000)+'\n';

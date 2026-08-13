@@ -63,6 +63,10 @@ def init_db() -> None:
         # 迁移：补上会话级禁用工具列（工具权限开关），存 JSON 列表
         if "disabled_tools" not in cols:
             conn.execute("ALTER TABLE conversations ADD COLUMN disabled_tools TEXT")
+        # 迁移：为 messages 补上 reasoning 列（深度思考模型的思考过程，供回放/导出）
+        msg_cols = [r["name"] for r in conn.execute("PRAGMA table_info(messages)")]
+        if "reasoning" not in msg_cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN reasoning TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -93,17 +97,19 @@ def add_message(
     role: str,
     content: str,
     tool_calls: Optional[list] = None,
+    reasoning: Optional[str] = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn = _get_conn()
     try:
         conn.execute(
-            "INSERT INTO messages(conversation_id, role, content, tool_calls, created_at) VALUES(?,?,?,?,?)",
+            "INSERT INTO messages(conversation_id, role, content, tool_calls, reasoning, created_at) VALUES(?,?,?,?,?,?)",
             (
                 conversation_id,
                 role,
                 content,
                 json.dumps(tool_calls) if tool_calls else None,
+                reasoning,
                 now,
             ),
         )
@@ -119,7 +125,7 @@ def get_history(conversation_id: str, limit: int = 50) -> list[dict]:
     conn = _get_conn()
     try:
         rows = conn.execute(
-            "SELECT role, content, tool_calls FROM messages "
+            "SELECT role, content, tool_calls, reasoning FROM messages "
             "WHERE conversation_id=? ORDER BY id DESC LIMIT ?",
             (conversation_id, limit),
         ).fetchall()
@@ -128,6 +134,8 @@ def get_history(conversation_id: str, limit: int = 50) -> list[dict]:
             item = {"role": r["role"], "content": r["content"]}
             if r["tool_calls"]:
                 item["tool_calls"] = json.loads(r["tool_calls"])
+            if r["reasoning"]:
+                item["reasoning"] = r["reasoning"]
             out.append(item)
         return out
     finally:
