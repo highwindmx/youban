@@ -74,6 +74,13 @@
   .bubble.md th, .bubble.md td { border:1px solid var(--border); padding:4px 8px; }
   /* 工具调用卡片 */
   .tool { font-size:12px; background:var(--tool); border:1px solid var(--tool-border); border-radius:8px; padding:6px 10px; margin-top:6px; color:#8a6d2f; }
+  /* 深度思考：可折叠「思考过程」块 */
+  .reasoning { font-size:12px; background:#f6f8fb; border:1px dashed #c4d0de; border-radius:8px; margin:0 0 6px; }
+  .reasoning-head { display:flex; align-items:center; gap:6px; cursor:pointer; padding:6px 10px; color:#5a6b80; font-weight:600; user-select:none; }
+  .reasoning-toggle { margin-left:auto; transition:transform .15s; font-size:10px; }
+  .reasoning.open .reasoning-toggle { transform:rotate(90deg); }
+  .reasoning-body { display:none; padding:0 10px 8px; white-space:pre-wrap; word-break:break-word; color:#46566b; font-size:13px; max-height:340px; overflow:auto; }
+  .reasoning.open .reasoning-body { display:block; }
   .tool-head { display:flex; align-items:center; gap:6px; cursor:pointer; font-weight:600; }
   .tool-head b { color:#6b520f; }
   .tool-toggle { margin-left:auto; color:#b08a3a; transition:transform .15s; font-size:10px; }
@@ -632,6 +639,7 @@ searchBox.addEventListener('input', ()=>{ clearTimeout(searchBox._t); searchBox.
 // ---------- 导出当前会话为 Markdown ----------
 exportBtn.onclick = async ()=>{
   try {
+    if(!convId){ toast('当前没有可导出的对话'); return; }
     const r = await fetch('/api/history/'+convId); const j = await r.json();
     const msgs = j.messages||[];
     let md = '# 友伴 对话导出\n\n';
@@ -646,6 +654,13 @@ exportBtn.onclick = async ()=>{
         md += '\n';
       }
     });
+    // 桌面端：走原生保存对话框（WebView2 的 blob 下载不可靠，会静默不落盘）
+    if(window.pywebview && window.pywebview.api && window.pywebview.api.save_text){
+      const path = await window.pywebview.api.save_text('友伴_'+convId+'.md', md);
+      if(path) toast('已导出到：'+path); else toast('已取消导出');
+      return;
+    }
+    // 浏览器端：blob 下载
     const blob = new Blob([md], {type:'text/markdown;charset=utf-8'});
     const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
     a.download='友伴_'+convId+'.md'; a.click();
@@ -711,6 +726,17 @@ function addTool(name, args, result, status){
   (currentTurn || log).appendChild(card);
   head.onclick = ()=>card.classList.toggle('open');
   return card;
+}
+// 在助手回合顶部插入可折叠的「思考过程」块（深度思考模型 reasoning_content）
+function addReasoningBlock(text){
+  const wrap = currentTurn; // .msg.assistant
+  if(!wrap) return;
+  const rb = document.createElement('div'); rb.className='reasoning';
+  rb.innerHTML = '<div class="reasoning-head">🧠 思考过程<span class="reasoning-toggle">▸</span></div>'
+    + '<div class="reasoning-body">'+escapeHtml(text)+'</div>';
+  rb.querySelector('.reasoning-head').onclick = ()=> rb.classList.toggle('open');
+  wrap.insertBefore(rb, wrap.firstChild);
+  scroll();
 }
 
 // ---------- 文件 chip ----------
@@ -916,6 +942,7 @@ async function send(){
         const m = ev.match(/^event: (\w+)\ndata: (.*)$/s); if(!m) continue;
         const kind=m[1], data=JSON.parse(m[2]);
         if(kind==='token'){ acc+=data.text; bubble.innerHTML=renderMarkdown(acc); scroll(); }
+        else if(kind==='reasoning'){ addReasoningBlock(data.text); }
         else if(kind==='tool'){ currentToolCard = addTool(data.name, data.args, undefined, 'running'); }
         else if(kind==='tool_result'){
           if(currentToolCard){

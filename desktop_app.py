@@ -96,6 +96,26 @@ class Api:
         result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
         return list(result) if result else []
 
+    def save_text(self, filename: str, content: str) -> str:
+        """桌面端：弹出原生保存对话框把文本写盘，返回实际路径；取消/关闭返回空串。
+
+        解决 WebView2 下 <a download> blob 静默不落盘的问题（无下载处理器）。
+        """
+        result = webview.windows[0].create_file_dialog(
+            webview.SAVE_DIALOG,
+            save_filename=filename,
+            file_types=("Markdown Files (*.md)", "All Files (*.*)"),
+        )
+        if not result:
+            return ""
+        # SAVE_DIALOG 返回字符串路径（个别版本包成单元素元组），统一处理
+        path = result[0] if isinstance(result, (list, tuple)) else result
+        if not path.lower().endswith(".md"):
+            path += ".md"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path
+
 
 def _start_server() -> None:
     import uvicorn

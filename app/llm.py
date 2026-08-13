@@ -375,6 +375,10 @@ async def _chat_inner(
 
         if not tool_calls:
             # 模型给出最终文本回复
+            # deepseek-reasoner 等推理模型会把思考过程放在 reasoning_content
+            reasoning = getattr(choice, "reasoning_content", None)
+            if isinstance(reasoning, str) and reasoning.strip():
+                yield _event("reasoning", {"text": reasoning})
             final = choice.content or ""
             accumulated.append(final)
             yield _event("token", {"text": final})

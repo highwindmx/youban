@@ -348,3 +348,42 @@ def test_tier1_conv_memory_injected(tmp_path):
     assert "[本对话小结（项目记忆" in sys_content
     assert "PROJECT_MEMORY_MARKER" in sys_content
 
+
+# ---------------- 深度思考 reasoning_content 透传 ----------------
+def test_reasoning_event_emitted_for_reasoner():
+    """deepseek-reasoner 返回 reasoning_content 时应透传为 reasoning 事件。"""
+    fake_resp = MagicMock()
+    fake_resp.usage = None
+    fake_choice = MagicMock()
+    fake_msg = MagicMock()
+    fake_msg.content = "最终答案"
+    fake_msg.tool_calls = None
+    fake_msg.reasoning_content = "让我先拆解问题：1)… 2)…"
+    fake_choice.message = fake_msg
+    fake_resp.choices = [fake_choice]
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = AsyncMock(return_value=fake_resp)
+
+    with patch.object(llm, "AsyncOpenAI", return_value=fake_client), patch.object(
+        llm.config, "DEEPSEEK_API_KEY", "test-key"
+    ), patch.object(llm.db, "get_all_memory", return_value=[]):
+
+        async def run():
+            events = []
+            async for ev in llm.chat_stream(
+                user_message="hi",
+                conversation_id="c_reason",
+                history=[],
+                model="deepseek-reasoner",
+            ):
+                events.append(ev)
+            return events
+
+        events = asyncio.run(run())
+
+    assert any(e.startswith("event: reasoning") for e in events)
+    assert "让我先拆解问题" in "\n".join(events)
+    # 最终答案仍通过 token/done 正常返回
+    assert "最终答案" in "\n".join(events)
+
