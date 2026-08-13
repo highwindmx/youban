@@ -26,6 +26,18 @@ from app.config import config
 
 _STATIC = Path(__file__).resolve().parent / "static"
 
+# pywebview 新版用 FileDialog 枚举替代旧常量（OPEN_DIALOG/SAVE_DIALOG/FOLDER_DIALOG
+# 已弃用，未来版本会移除）。做一层兼容：有枚举就用枚举，否则回退旧常量，
+# 避免老版本 pywebview 安装直接 NameError。
+try:
+    _DLG_OPEN = webview.FileDialog.OPEN
+    _DLG_FOLDER = webview.FileDialog.FOLDER
+    _DLG_SAVE = webview.FileDialog.SAVE
+except AttributeError:  # pragma: no cover - 老版本兜底
+    _DLG_OPEN = webview.OPEN_DIALOG
+    _DLG_FOLDER = webview.FOLDER_DIALOG
+    _DLG_SAVE = webview.SAVE_DIALOG
+
 
 def _apply_window_icon() -> None:
     """Win32：给顶层窗口设置任务栏/标题栏图标。
@@ -89,11 +101,11 @@ class Api:
     """暴露给前端 JS 的桌面能力：原生文件/目录选择对话框。"""
 
     def pick_file(self) -> list[str]:
-        result = webview.windows[0].create_file_dialog(webview.OPEN_DIALOG)
+        result = webview.windows[0].create_file_dialog(_DLG_OPEN)
         return list(result) if result else []
 
     def pick_dir(self) -> list[str]:
-        result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+        result = webview.windows[0].create_file_dialog(_DLG_FOLDER)
         return list(result) if result else []
 
     def save_text(self, filename: str, content: str) -> str:
@@ -102,7 +114,7 @@ class Api:
         解决 WebView2 下 <a download> blob 静默不落盘的问题（无下载处理器）。
         """
         result = webview.windows[0].create_file_dialog(
-            webview.SAVE_DIALOG,
+            _DLG_SAVE,
             save_filename=filename,
             file_types=("Markdown Files (*.md)", "All Files (*.*)"),
         )
