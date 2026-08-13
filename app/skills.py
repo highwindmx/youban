@@ -349,12 +349,20 @@ def manage_dir(action: str, path: str, content: str = "") -> str:
     path: 相对 TARGET_DIR 的路径
     content: write 时的文件内容；move 时的目标相对路径
     """
+    action = action.lower()
+    # 删除类高危路径：在路径解析之前就拦截（".." 会让 _safe_target_path 直接抛错，
+    # 通配/越级也应在「文件是否存在」之前拦截，否则会被「不存在」提前短路成死代码）。
+    if action == "delete":
+        norm = (path or "").replace("\\", "/")
+        if norm in ("", ".", "..", "/"):
+            return "[已拦截] 禁止删除工作目录根本身，以防误删整个项目。"
+        if ".." in norm or "*" in norm:
+            return "[已拦截] 删除操作禁止包含 '..' 或 '*'，以防越级/批量误删。"
     try:
         target = _safe_target_path(path)
     except ValueError as e:
         return f"[错误] {e}"
 
-    action = action.lower()
     if action == "list":
         if not target.exists():
             return f"[错误] 路径不存在: {path}"
@@ -379,11 +387,7 @@ def manage_dir(action: str, path: str, content: str = "") -> str:
     if action == "delete":
         if not target.exists():
             return f"[错误] 路径不存在: {path}"
-        # 防误删根目录 / 越级 / 通配
-        if path in ("", ".", "..", "/"):
-            return "[已拦截] 禁止删除工作目录根本身，以防误删整个项目。"
-        if ".." in path or "*" in path:
-            return "[已拦截] 删除操作禁止包含 '..' 或 '*'，以防越级/批量误删。"
+        # 兜底：即便路径绕过上面的字符串检查，也禁止删除工作目录根本身
         if target.resolve() == effective_target_dir().resolve():
             return "[已拦截] 禁止删除工作目录根本身，以防误删整个项目。"
         if target.is_dir():

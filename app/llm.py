@@ -168,17 +168,29 @@ def _trim_to_budget(messages: list[dict]) -> list[dict]:
     idx = 0
     while total > BUDGET_TOKENS and len(rest) - idx > 2:
         m = rest[idx]
-        drop = [m]
-        # 若删除的是 tool 消息，把它的 assistant(tool_calls) 及紧跟的所有 tool 消息一并删，
-        # 避免留下「孤儿」tool 消息（OpenAI 要求 tool 必须紧跟其 assistant）。
-        if m.get("role") == "tool" and idx - 1 >= 0:
-            prev = rest[idx - 1]
-            if prev.get("role") == "assistant" and prev.get("tool_calls"):
-                drop = [prev]
-                j = idx
-                while j < len(rest) and rest[j].get("role") == "tool":
-                    drop.append(rest[j])
-                    j += 1
+        drop = []
+        # 要删的是「助手(tool_calls)」或「tool」时，连同其配对整体删，避免孤儿 tool 消息
+        # （OpenAI 要求 tool 必须紧跟其 assistant(tool_calls)，否则会 400 报错）。
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            # 删助手意图时，把它后面紧邻的所有 tool 结果一并删
+            drop = [m]
+            j = idx + 1
+            while j < len(rest) and rest[j].get("role") == "tool":
+                drop.append(rest[j])
+                j += 1
+        elif m.get("role") == "tool":
+            # 删 tool 时，向前连带其 assistant(tool_calls)，向后连带后续 tool
+            if idx - 1 >= 0:
+                prev = rest[idx - 1]
+                if prev.get("role") == "assistant" and prev.get("tool_calls"):
+                    drop = [prev]
+            drop.append(m)
+            j = idx + 1
+            while j < len(rest) and rest[j].get("role") == "tool":
+                drop.append(rest[j])
+                j += 1
+        else:
+            drop = [m]
         for d in drop:
             total -= _approx_tokens(d.get("content", ""))
             for tc in d.get("tool_calls", []) or []:

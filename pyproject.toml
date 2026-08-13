@@ -28,6 +28,11 @@ dependencies = [
 [tool.uv]
 package = false
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+]
+
 [[index]]
 url="https://mirrors.aliyun.com/pypi/simple/"
 default=true
