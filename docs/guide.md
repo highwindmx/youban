@@ -1,0 +1,1 @@
+mini-workbuddy 是一个本地 AI 助手，使用 FastAPI 和 DeepSeek。支持 RAG 检索本地文档。

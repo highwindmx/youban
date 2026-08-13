@@ -1,0 +1,33 @@
+[project]
+name = "mbuddy"
+version = "0.1.0"
+description = "简易版 WorkBuddy：FastAPI + DeepSeek，支持对话、Skill 工具调用、本地文件操作与代码执行"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "openai>=1.54.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.9.0",
+    "python-dotenv>=1.0.1",
+    "python-multipart>=0.0.20",
+    "pywebview>=6.2.1",
+    "pypdf2>=3.0.1",
+    "pdfplumber>=0.11.10",
+    "pymupdf>=1.28.2",
+    "python-docx>=1.2.0",
+    "openpyxl>=3.1.5",
+    "python-pptx>=1.0.2",
+    "pandas>=3.0.5",
+    "xlsxwriter>=3.2.9",
+    "extract-msg>=0.56.0",
+    "pytesseract>=0.3.13",
+    "docx2pdf>=0.1.8",
+]
+
+[tool.uv]
+package = false
+
+[[index]]
+url="https://mirrors.aliyun.com/pypi/simple/"
+default=true

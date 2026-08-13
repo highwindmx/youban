@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.uv/
+
+# 环境配置（含密钥）
+.env
+
+# 运行时数据
+*.db
+*.db-wal
+*.db-shm
+*.log
+.wb_runs/
+todo.txt
+
+# 可重建的本地索引
+docs/.rag_index.json
+
+# 本地 agent 工作记忆（非项目源码）
+.workbuddy/
