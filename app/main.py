@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app import db
 from app.config import config
 from app.llm import chat_stream
-from app.schemas import ChatRequest, RenameRequest
+from app.schemas import ChatRequest, RenameRequest, WorkDirRequest
 
 # 每个进行中的对话流对应一个中止事件；前端点「停止」即 set 它
 _STOP_EVENTS: dict[str, asyncio.Event] = {}
@@ -61,7 +61,17 @@ async def create_conv(conversation_id: str | None = None):
 
 @app.get("/api/history/{conversation_id}")
 async def history(conversation_id: str):
-    return {"messages": db.get_history(conversation_id)}
+    return {
+        "work_dir": db.get_work_dir(conversation_id) or "",
+        "messages": db.get_history(conversation_id),
+    }
+
+
+@app.post("/api/conversations/{conversation_id}/workdir")
+async def set_workdir(conversation_id: str, req: WorkDirRequest):
+    """持久化会话级工作目录范围（前端 pick 后调用，打开历史对话时回显）。"""
+    db.set_conversation_work_dir(conversation_id, req.work_dir or None)
+    return {"ok": True, "work_dir": req.work_dir or ""}
 
 
 @app.get("/api/search")
@@ -133,7 +143,7 @@ async def upload(files: list[UploadFile] = File(...)):
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     conv_id = req.conversation_id or str(uuid.uuid4())
-    db.create_conversation(conv_id)
+    db.create_conversation(conv_id, work_dir=req.work_dir or None)
     # 仅在会话首条消息时设置标题（避免后续消息覆盖，原逻辑每次都覆盖）
     if not db.get_history(conv_id):
         db.rename_conversation(conv_id, req.message[:30])

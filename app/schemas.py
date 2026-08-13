@@ -10,3 +10,7 @@ class ChatRequest(BaseModel):
 
 class RenameRequest(BaseModel):
     title: str
+
+
+class WorkDirRequest(BaseModel):
+    work_dir: str | None = None

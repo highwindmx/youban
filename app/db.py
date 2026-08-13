@@ -52,18 +52,23 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE conversations ADD COLUMN usage_total INTEGER DEFAULT 0"
             )
+        # 迁移：补上会话级工作目录范围列（按会话持久化，打开历史对话时回显）
+        if "work_dir" not in cols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN work_dir TEXT")
         conn.commit()
     finally:
         conn.close()
 
 
-def create_conversation(conversation_id: str, title: str = "") -> None:
+def create_conversation(
+    conversation_id: str, title: str = "", work_dir: Optional[str] = None
+) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn = _get_conn()
     try:
         conn.execute(
-            "INSERT OR IGNORE INTO conversations(id, title, created_at, updated_at) VALUES(?,?,?,?)",
-            (conversation_id, title, now, now),
+            "INSERT OR IGNORE INTO conversations(id, title, created_at, updated_at, work_dir) VALUES(?,?,?,?,?)",
+            (conversation_id, title, now, now, work_dir),
         )
         conn.commit()
     finally:
@@ -122,7 +127,7 @@ def list_conversations(limit: int = 100) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT c.id, c.title, c.created_at, c.updated_at, "
-            "COALESCE(c.usage_total, 0) AS usage_total, "
+            "COALESCE(c.usage_total, 0) AS usage_total, c.work_dir, "
             "(SELECT content FROM messages m WHERE m.conversation_id=c.id "
             "ORDER BY m.id ASC LIMIT 1) AS first_msg "
             "FROM conversations c ORDER BY c.updated_at DESC LIMIT ?",
@@ -138,9 +143,35 @@ def list_conversations(limit: int = 100) -> list[dict]:
                     "created_at": r["created_at"],
                     "updated_at": r["updated_at"],
                     "usage_total": r["usage_total"],
+                    "work_dir": r["work_dir"] or "",
                 }
             )
         return out
+    finally:
+        conn.close()
+
+
+def set_conversation_work_dir(conversation_id: str, work_dir: Optional[str]) -> None:
+    """设置/清除会话级工作目录范围（来源：前端 pick 或 chat 请求）。"""
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "UPDATE conversations SET work_dir=? WHERE id=?",
+            (work_dir or None, conversation_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_work_dir(conversation_id: str) -> Optional[str]:
+    """读取会话级工作目录范围（打开历史对话时回显）。"""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT work_dir FROM conversations WHERE id=?", (conversation_id,)
+        ).fetchone()
+        return row["work_dir"] if row and row["work_dir"] else None
     finally:
         conn.close()
 
