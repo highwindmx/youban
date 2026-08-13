@@ -16,6 +16,7 @@ from openai import AsyncOpenAI
 from app.config import config
 from app import skills
 from app import db
+from app import builtin_skills
 
 SYSTEM_PROMPT = (
     "你是一个名为 友伴 的本地 AI 助手，运行在用户的本机工作区内。"
@@ -274,8 +275,13 @@ async def _chat_inner(
             f"- 本次对话涉及文件读写、列目录、搜索、解析文档、目录管理时，"
             f"默认以此目录为根；相对路径以此目录为基准，请勿擅自操作该目录之外的路径。"
         )
+    # 内置技能（预装能力）：本轮用户输入命中触发词时追加专业指令
+    skill_text = ""
+    sk = builtin_skills.detect_skill(user_message)
+    if sk:
+        skill_text = "\n\n" + sk
     messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT + ENV_CONTEXT + wd_text + mem_text}
+        {"role": "system", "content": SYSTEM_PROMPT + ENV_CONTEXT + wd_text + skill_text + mem_text}
     ]
     # 历史消息：还原 assistant(tool_calls) + tool 配对，并回喂上一轮工具结果
     messages.extend(_expand_history(history))
