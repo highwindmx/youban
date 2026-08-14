@@ -24,3 +24,10 @@ class ConvConfigRequest(BaseModel):
     persona: str | None = None
     disabled_tools: list[str] | None = None
     show_reasoning: bool | None = None
+
+
+class MemoryItem(BaseModel):
+    """全局长期记忆条目（跨对话通用偏好），写入/覆盖均按 key 唯一。"""
+
+    key: str
+    value: str

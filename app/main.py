@@ -16,7 +16,7 @@ from app import db
 from app import skills
 from app.config import config
 from app.llm import chat_stream, _create_with_retry
-from app.schemas import ChatRequest, RenameRequest, ConvConfigRequest, WorkDirRequest
+from app.schemas import ChatRequest, RenameRequest, ConvConfigRequest, WorkDirRequest, MemoryItem
 
 # 每个进行中的对话流对应一个中止事件；前端点「停止」即 set 它
 _STOP_EVENTS: dict[str, asyncio.Event] = {}
@@ -148,6 +148,33 @@ async def summarize_conv(conversation_id: str):
         return {"ok": False, "error": "模型未返回小结内容。"}
     msg = skills.write_conv_summary(conversation_id, wd, summary)
     return {"ok": True, "summary": summary, "msg": msg}
+
+
+# ---------- 全局长期记忆（跨对话通用偏好） ----------
+@app.get("/api/memory")
+async def list_memory():
+    """列出全部全局偏好（key/value 列表）。"""
+    return {"items": db.get_all_memory()}
+
+
+@app.post("/api/memory")
+async def add_memory(item: MemoryItem):
+    """新增/覆盖一条全局偏好（key 唯一）。"""
+    key = (item.key or "").strip()
+    value = (item.value or "").strip()
+    if not key:
+        return {"ok": False, "error": "key 不能为空"}
+    if not value:
+        return {"ok": False, "error": "value 不能为空"}
+    db.upsert_memory(key, value)
+    return {"ok": True, "key": key}
+
+
+@app.delete("/api/memory/{key}")
+async def remove_memory(key: str):
+    """删除一条全局偏好（按 key）。"""
+    db.delete_memory(key)
+    return {"ok": True, "key": key}
 
 
 @app.get("/api/search")

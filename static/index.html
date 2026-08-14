@@ -169,6 +169,30 @@
   #settingsPanel .pactions { display:flex; justify-content:flex-end; gap:10px; margin-top:8px; }
   #settingsPanel .pactions button { padding:7px 16px; border-radius:8px; font-size:13px; cursor:pointer; border:1px solid var(--border); background:#fff; }
   #settingsPanel .pactions button.primary { background:var(--primary); color:#fff; border-color:var(--primary); }
+  /* 全局偏好面板：复用对话设置面板的视觉语言 */
+  #globalPrefPanel { position:fixed; inset:0; background:rgba(0,0,0,.35); display:none; align-items:center; justify-content:center; z-index:75; }
+  #globalPrefPanel.show { display:flex; }
+  #globalPrefPanel .box { background:#fff; border-radius:12px; padding:20px; width:460px; max-height:86vh; overflow:auto; box-shadow:0 10px 30px rgba(0,0,0,.2); }
+  #globalPrefPanel .ptitle { font-size:16px; font-weight:600; margin-bottom:14px; display:flex; align-items:center; gap:8px; }
+  #globalPrefPanel .prow { margin-bottom:14px; }
+  #globalPrefPanel .prow > label { display:block; font-size:13px; color:#3a4250; margin-bottom:6px; }
+  #globalPrefPanel .prow .hint { font-size:11px; color:var(--muted); margin-top:4px; }
+  #globalPrefPanel input[type="text"] { width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:8px; font-size:13px; outline:none; box-sizing:border-box; margin-bottom:8px; }
+  #globalPrefPanel input[type="text"]:focus { border-color:var(--primary); }
+  #globalPrefPanel textarea { width:100%; height:auto; min-height:60px; resize:vertical; font-family:inherit; outline:none; border:1px solid var(--border); border-radius:8px; padding:9px 11px; font-size:13px; }
+  #globalPrefPanel textarea:focus { border-color:var(--primary); }
+  #globalPrefPanel .preflist { display:flex; flex-direction:column; gap:8px; margin-bottom:14px; }
+  #globalPrefPanel .prefitem { border:1px solid var(--border); border-radius:8px; padding:8px 10px; }
+  #globalPrefPanel .prefitem .k { font-size:12px; font-weight:600; color:#1a3a8f; margin-bottom:4px; word-break:break-all; }
+  #globalPrefPanel .prefitem .v { font-size:13px; color:#3a4250; white-space:pre-wrap; word-break:break-word; margin-bottom:6px; }
+  #globalPrefPanel .prefitem .ops { display:flex; gap:8px; justify-content:flex-end; }
+  #globalPrefPanel .empty { color:var(--muted); font-size:13px; margin-bottom:14px; }
+  #globalPrefPanel .pbtn { font-size:12px; padding:5px 12px; border:1px solid var(--border); background:#fff; border-radius:8px; cursor:pointer; color:#3a4250; }
+  #globalPrefPanel .pbtn:hover { background:#eef1f5; }
+  #globalPrefPanel .pbtn.danger { color:#e5484d; border-color:#f3c2c4; }
+  #globalPrefPanel .pactions { display:flex; justify-content:flex-end; gap:10px; margin-top:8px; }
+  #globalPrefPanel .pactions button { padding:7px 16px; border-radius:8px; font-size:13px; cursor:pointer; border:1px solid var(--border); background:#fff; }
+  #globalPrefPanel .pactions button.primary { background:var(--primary); color:#fff; border-color:var(--primary); }
 </style>
 </head>
 <body>
@@ -179,7 +203,7 @@
   <div id="convList"></div>
 </div>
 <div id="main">
-  <header><span id="headerWdir" class="hdrwdir" title=""></span> <span id="usageTag" class="usage"></span> <button id="exportBtn" class="export">⬇ 导出</button></header>
+  <header><span id="headerWdir" class="hdrwdir" title=""></span> <span id="usageTag" class="usage"></span> <button id="globalPrefBtn" class="export">🌐 全局偏好</button> <button id="exportBtn" class="export">⬇ 导出</button></header>
   <div id="log"></div>
   <div class="pickbtns" id="pickBtns">
     <button id="pickFile">📎 选择文件</button>
@@ -251,6 +275,25 @@
   </div>
 </div>
 
+<!-- 全局偏好面板：跨对话通用的长期记忆（角色定位 / 通用需要），存于 memory 表 -->
+<div id="globalPrefPanel">
+  <div class="box">
+    <div class="ptitle">🌐 全局偏好</div>
+    <div class="hint" style="margin-bottom:12px;">这些偏好对所有对话生效（存储在全局记忆，跨对话持久化）。例如：你的角色定位、回复语言与风格、通用工程约定。</div>
+    <div id="prefList" class="preflist"></div>
+    <div id="prefEmpty" class="empty">暂无全局偏好，在下方添加一条。</div>
+    <div class="prow col">
+      <label>新增 / 编辑偏好</label>
+      <input id="prefKey" type="text" placeholder="标签（key），如 role_and_needs" />
+      <textarea id="prefValue" placeholder="偏好内容，如：我是一名偏后端 / 系统方向的工程师；回复用中文、简洁、优先给可运行代码与命令。"></textarea>
+    </div>
+    <div class="pactions">
+      <button id="prefClose" type="button">关闭</button>
+      <button id="prefSave" class="primary" type="button">保存这条</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const log = document.getElementById('log');
 const ta = document.getElementById('msg');
@@ -272,6 +315,12 @@ const modalOk = document.getElementById('modalOk');
 const modalCancel = document.getElementById('modalCancel');
 // 对话设置面板
 const settingsPanel = document.getElementById('settingsPanel');
+const globalPrefPanel = document.getElementById('globalPrefPanel');
+const globalPrefBtn = document.getElementById('globalPrefBtn');
+const prefListEl = document.getElementById('prefList');
+const prefEmptyEl = document.getElementById('prefEmpty');
+const prefKeyEl = document.getElementById('prefKey');
+const prefValueEl = document.getElementById('prefValue');
 const setWdirText = document.getElementById('setWdirText');
 const setModel = document.getElementById('setModel');
 const setShowReasoning = document.getElementById('setShowReasoning');
@@ -914,6 +963,66 @@ setSave.onclick = saveSettings;
 setCancel.onclick = closeSettings;
 settingsPanel.onclick = (e)=>{ if(e.target === settingsPanel) closeSettings(); };
 dirBtn.onclick = openSettings;
+// ---------- 全局偏好面板（跨对话通用记忆） ----------
+async function openGlobalPref(){
+  prefKeyEl.value = '';
+  prefValueEl.value = '';
+  await loadGlobalPref();
+  globalPrefPanel.classList.add('show');
+}
+function closeGlobalPref(){ globalPrefPanel.classList.remove('show'); }
+async function loadGlobalPref(){
+  try {
+    const r = await fetch('/api/memory');
+    const data = await r.json();
+    const items = (data.items || []);
+    prefListEl.innerHTML = '';
+    prefEmptyEl.style.display = items.length ? 'none' : 'block';
+    for(const it of items){
+      const item = document.createElement('div'); item.className = 'prefitem';
+      const k = document.createElement('div'); k.className = 'k'; k.textContent = it.key;
+      const v = document.createElement('div'); v.className = 'v'; v.textContent = it.value;
+      const ops = document.createElement('div'); ops.className = 'ops';
+      const editBtn = document.createElement('button'); editBtn.className = 'pbtn'; editBtn.textContent = '编辑';
+      editBtn.onclick = ()=>{ prefKeyEl.value = it.key; prefValueEl.value = it.value; prefKeyEl.focus(); };
+      const delBtn = document.createElement('button'); delBtn.className = 'pbtn danger'; delBtn.textContent = '删除';
+      delBtn.onclick = async ()=>{ await deletePref(it.key); };
+      ops.appendChild(editBtn); ops.appendChild(delBtn);
+      item.appendChild(k); item.appendChild(v); item.appendChild(ops);
+      prefListEl.appendChild(item);
+    }
+  } catch(e){ toast('加载全局偏好失败：' + e); }
+}
+async function savePref(){
+  const key = (prefKeyEl.value || '').trim();
+  const value = (prefValueEl.value || '').trim();
+  if(!key){ toast('请填写标签（key）'); return; }
+  if(!value){ toast('请填写偏好内容'); return; }
+  try {
+    const r = await fetch('/api/memory', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ key, value })
+    });
+    const data = await r.json();
+    if(!r.ok || !data.ok){ toast('保存失败：' + (data.error || r.status)); return; }
+    prefKeyEl.value = ''; prefValueEl.value = '';
+    await loadGlobalPref();
+    toast('已保存全局偏好：' + key);
+  } catch(e){ toast('保存失败：' + e); }
+}
+async function deletePref(key){
+  try {
+    const r = await fetch('/api/memory/' + encodeURIComponent(key), { method:'DELETE' });
+    const data = await r.json();
+    if(!r.ok || !data.ok){ toast('删除失败：' + (data.error || r.status)); return; }
+    await loadGlobalPref();
+    toast('已删除：' + key);
+  } catch(e){ toast('删除失败：' + e); }
+}
+globalPrefBtn.onclick = openGlobalPref;
+document.getElementById('prefClose').onclick = closeGlobalPref;
+document.getElementById('prefSave').onclick = savePref;
+globalPrefPanel.onclick = (e)=>{ if(e.target === globalPrefPanel) closeGlobalPref(); };
 // 顶部工作目录标记：点击在系统文件管理器中打开对应目录（桌面版才支持）
 function openWorkDir(){
   if(!workDir){ toast('尚未设置工作目录'); return; }
