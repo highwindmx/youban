@@ -110,7 +110,6 @@
   .dirbtn { width:44px; flex:none; border:1px solid var(--border); background:#fff; border-radius:10px; font-size:22px; line-height:1; cursor:pointer; color:var(--primary); }
   .dirbtn:hover { background:#eaf1ff; }
   .dirbtn.active { background:#e3edff; border-color:#b9d2ff; color:#1a3a8f; font-weight:700; }
-  #wdirChip { margin:0 0 6px; display:flex; flex-wrap:wrap; gap:6px; }
   textarea { flex:1; resize:none; height:44px; max-height:140px; padding:10px 12px; border:1px solid var(--border); border-radius:10px; font-size:14px; font-family:inherit; outline:none; }
   textarea:focus { border-color:var(--primary); }
   textarea.dragover { border-color:var(--primary); background:#f0f6ff; }
@@ -186,7 +185,6 @@
     <button id="pickFile">📎 选择文件</button>
     <button id="pickDir">📁 选择目录</button>
   </div>
-  <div id="wdirChip"></div>
   <div id="fileChip"></div>
   <div id="imgChip"></div>
   <div id="inputbar">
@@ -260,7 +258,6 @@ const sendBtn = document.getElementById('send');
 const convListEl = document.getElementById('convList');
 const fileChipEl = document.getElementById('fileChip');
 const imgChipEl = document.getElementById('imgChip');
-const wdirChipEl = document.getElementById('wdirChip');
 const dirBtn = document.getElementById('dirBtn');
 const searchBox = document.getElementById('searchBox');
 const exportBtn = document.getElementById('exportBtn');
@@ -838,7 +835,6 @@ function saveWorkDir(){
   } catch(e){}
 }
 function renderWdir(){
-  wdirChipEl.innerHTML = '';
   const hw = document.getElementById('headerWdir');
   if(!workDir){
     dirBtn.classList.remove('active');
@@ -846,15 +842,9 @@ function renderWdir(){
     return;
   }
   dirBtn.classList.add('active');
-  const chip = document.createElement('div'); chip.className = 'chip';
-  chip.innerHTML = '📁 <span class="name">工作目录: ' + escapeHtml(workDir) + '</span> <span class="x">✕</span>';
-  // 点 chip 主体打开对话设置面板（消除 ＋/chip/header 三处分散入口）
-  chip.onclick = (e)=>{ if(e.target.classList.contains('x')) return; openSettings(); };
-  chip.querySelector('.x').onclick = (e)=>{ e.stopPropagation(); workDir = ''; saveWorkDir(); };
-  wdirChipEl.appendChild(chip);
   if(hw){
     hw.textContent = '📁 ' + workDir;
-    hw.title = '本对话工作目录：' + workDir + '（点击打开对话设置）';
+    hw.title = '本对话工作目录：' + workDir + '（点击在文件管理器中打开）';
     hw.classList.add('show');
   }
 }
@@ -924,7 +914,19 @@ setSave.onclick = saveSettings;
 setCancel.onclick = closeSettings;
 settingsPanel.onclick = (e)=>{ if(e.target === settingsPanel) closeSettings(); };
 dirBtn.onclick = openSettings;
-document.getElementById('headerWdir').onclick = openSettings;
+// 顶部工作目录标记：点击在系统文件管理器中打开对应目录（桌面版才支持）
+function openWorkDir(){
+  if(!workDir){ toast('尚未设置工作目录'); return; }
+  const api = window.pywebview && window.pywebview.api;
+  if(api && api.open_dir){
+    Promise.resolve(api.open_dir(workDir))
+      .then((ok)=>{ if(ok !== true) toast('无法打开目录：' + workDir); })
+      .catch(()=> toast('无法打开目录：' + workDir));
+  } else {
+    toast('仅在桌面版支持直接打开目录');
+  }
+}
+document.getElementById('headerWdir').onclick = openWorkDir;
 // ---------- 桌面版：原生文件/目录选择（真实绝对路径）----------
 async function pick(kind){
   if(!window.pywebview || !window.pywebview.api) return;

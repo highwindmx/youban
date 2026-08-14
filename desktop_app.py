@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import ctypes
 import os
+import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -133,6 +135,25 @@ class Api:
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return path
+
+    def open_dir(self, path: str) -> bool:
+        """在系统文件管理器中打开指定目录。
+
+        Windows 用 os.startfile（资源管理器），macOS 用 open，Linux 用 xdg-open。
+        成功返回 True，路径为空或打开失败返回 False。
+        """
+        if not path:
+            return False
+        try:
+            if config.IS_WINDOWS:
+                os.startfile(path)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.run(["open", path], check=False)
+            else:
+                subprocess.run(["xdg-open", path], check=False)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
 
 def _start_server() -> None:
