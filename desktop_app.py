@@ -22,6 +22,12 @@ from pathlib import Path
 
 import webview
 
+# 必须在导入 app.config 之前标记桌面模式：
+# config 模块在导入期就按 MB_DESKTOP 是否存在算出 MB_SANDBOX，若等到 main()
+# 里再 setdefault，配置早已冻结为沙箱开启，导致桌面端误拦截用户选择的任意本地目录
+# （报「越出沙箱范围」）。此处提前设置即可让桌面端正确放开文件沙箱。
+os.environ.setdefault("MB_DESKTOP", "1")
+
 from app.config import config
 
 _STATIC = Path(__file__).resolve().parent / "static"
@@ -141,8 +147,8 @@ def _start_server() -> None:
 
 
 def main() -> None:
-    # 桌面模式：放开文件沙箱（允许用户选择真实本地文件并读写）
-    os.environ.setdefault("MB_DESKTOP", "1")
+    # 注意：MB_DESKTOP 已在模块顶部（导入 app.config 之前）设置，此处不再重复，
+    # 否则配置模块早已按默认值把 MB_SANDBOX 算成 True，桌面端沙箱仍会开启。
 
     # 在后台线程启动 FastAPI 服务
     server_thread = threading.Thread(target=_start_server, daemon=True)

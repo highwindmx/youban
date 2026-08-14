@@ -450,6 +450,70 @@ def test_no_workdir_uses_global_root():
     assert f"工作区根目录(WORKSPACE_ROOT)：{global_root}" in sys_content
 
 
+# ---------------- 沙箱：桌面端放开 / 网页端收紧工作目录 ----------------
+def test_desktop_allows_out_of_root_workdir(tmp_path):
+    """MB_SANDBOX=False（桌面端）时，工作目录可指向任意本地目录，不被沙箱拦截。"""
+    captured = {}
+    outside = tmp_path / "real_project"
+    outside.mkdir()
+    client = _stream_client([_chunk(_delta(content="ok"), finish="stop")])
+
+    with patch.object(llm, "AsyncOpenAI", return_value=client), patch.object(
+        llm.config, "DEEPSEEK_API_KEY", "test-key"
+    ), patch.object(llm.config, "MB_SANDBOX", False), patch.object(
+        llm.db, "get_all_memory", return_value=[]
+    ):
+        events = []
+        async def run():
+            async for ev in llm.chat_stream(
+                user_message="hi", conversation_id="c_sb_desk", history=[],
+                work_dir=str(outside),
+            ):
+                events.append(ev)
+            captured["messages"] = (
+                client.chat.completions.create.call_args.kwargs.get("messages")
+            )
+        asyncio.run(run())
+
+    joined = "\n".join(events)
+    assert "越出沙箱范围" not in joined
+    sys_content = captured["messages"][0]["content"]
+    assert f"工作区根目录(WORKSPACE_ROOT)：{str(outside)}" in sys_content
+
+
+def test_web_rejects_out_of_root_workdir(tmp_path):
+    """MB_SANDBOX=True（网页端）时，工作目录越出 WORKSPACE_ROOT 应被拦截并忽略。"""
+    captured = {}
+    outside = tmp_path / "other"
+    outside.mkdir()
+    global_root = str(llm.config.WORKSPACE_ROOT)
+    client = _stream_client([_chunk(_delta(content="ok"), finish="stop")])
+
+    with patch.object(llm, "AsyncOpenAI", return_value=client), patch.object(
+        llm.config, "DEEPSEEK_API_KEY", "test-key"
+    ), patch.object(llm.config, "MB_SANDBOX", True), patch.object(
+        llm.db, "get_all_memory", return_value=[]
+    ):
+        events = []
+        async def run():
+            async for ev in llm.chat_stream(
+                user_message="hi", conversation_id="c_sb_web", history=[],
+                work_dir=str(outside),
+            ):
+                events.append(ev)
+            captured["messages"] = (
+                client.chat.completions.create.call_args.kwargs.get("messages")
+            )
+        asyncio.run(run())
+
+    joined = "\n".join(events)
+    assert "越出沙箱范围" in joined
+    sys_content = captured["messages"][0]["content"]
+    # 被忽略后回退为全局根目录，不应再出现该工作目录
+    assert f"工作区根目录(WORKSPACE_ROOT)：{str(outside)}" not in sys_content
+    assert f"工作区根目录(WORKSPACE_ROOT)：{global_root}" in sys_content
+
+
 # ---------------- 深度思考 reasoning_content 流式透传 ----------------
 def test_reasoning_event_emitted_for_reasoner():
     """deepseek-reasoner 的 reasoning_content 应以流式 reasoning 事件逐段透传。"""
