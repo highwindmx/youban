@@ -93,6 +93,15 @@
   .tool-status.running { color:#2f6df6; background:#e7efff; }
   .tool-status.success { color:#1a9d5a; background:#e3f7ec; }
   .tool-status.error { color:#e5484d; background:#fde7e8; }
+  /* 工具活动合并为单个可折叠「执行过程」块（一轮对话内复用） */
+  .exec-block { margin-top:8px; border:1px solid var(--tool-border); border-radius:8px; overflow:hidden; }
+  .exec-head { display:flex; align-items:center; gap:6px; cursor:pointer; padding:7px 10px; font-size:12px; background:var(--tool); }
+  .exec-head b { font-weight:600; color:#6b520f; }
+  .exec-count { color:#a07d33; font-weight:400; }
+  .exec-toggle { margin-left:auto; color:#b08a3a; font-size:10px; transition:transform .15s; }
+  .exec-block.open .exec-toggle { transform:rotate(180deg); }
+  .exec-body { display:none; padding:8px 10px; background:var(--panel); }
+  .exec-block.open .exec-body { display:block; }
   .codewrap { position:relative; margin:.5em 0; }
   .copy-btn { font-size:11px; padding:2px 8px; border:1px solid var(--border); background:#fff; border-radius:6px; cursor:pointer; color:#3a4250; }
   .copy-btn:hover { background:#eef1f5; }
@@ -293,6 +302,7 @@ let convs = [];
 let pendingFiles = [];   // 拖拽/上传/选择进来的文件/目录路径
 let currentTurn = null;  // 当前 assistant 回合容器（工具卡片挂这里）
 let currentToolCard = null; // 当前工具卡片引用（替代脆弱的 :last-of-type）
+let currentExecBlock = null; // 当前回合的「执行过程」折叠块（一轮内复用，避免工具卡散落堆叠）
 let pendingImages = [];  // 图片 base64（多模态）
 let curTokens = 0;       // 当前会话累计 token（实时）
 let workDir = '';        // 本对话的工作目录范围（按会话存 localStorage）
@@ -711,6 +721,7 @@ document.getElementById('newBtn').onclick = ()=>{ if(!streaming) newConv(); };
 
 // ---------- 消息渲染 ----------
 function addMsg(role, text=''){
+  currentExecBlock = null; // 新消息开始，下一轮工具活动重建独立的「执行过程」块
   const wrap = document.createElement('div'); wrap.className='msg '+role;
   const row = document.createElement('div'); row.className='msg-row';
   const av = document.createElement('div'); av.className='avatar'; av.textContent = role==='user'?'我':'AI';
@@ -738,20 +749,38 @@ function makeResBlock(result){
   rb.appendChild(rl); rb.appendChild(pre);
   return rb;
 }
+function ensureExecBlock(){
+  // 在同一助手回合内复用同一个「执行过程」折叠块；新回合由 addMsg 把 currentExecBlock 置空后重建
+  const root = currentTurn || log;
+  if(currentExecBlock && currentExecBlock.parentNode === root) return currentExecBlock;
+  const eb = document.createElement('div'); eb.className='exec-block open';
+  eb.innerHTML = '<div class="exec-head"><span>🔧</span><b>执行过程</b>'
+    + '<span class="exec-count">0 个工具</span>'
+    + '<span class="exec-toggle">▾</span></div>'
+    + '<div class="exec-body"></div>';
+  eb.querySelector('.exec-head').onclick = ()=> eb.classList.toggle('open');
+  root.appendChild(eb);
+  currentExecBlock = eb;
+  return eb;
+}
 function addTool(name, args, result, status){
+  const eb = ensureExecBlock();
+  const body = eb.querySelector('.exec-body');
   const card = document.createElement('div'); card.className='tool';
   const head = document.createElement('div'); head.className='tool-head';
   const st = status || statusOf(result);
   head.innerHTML = '<span>🔧</span><b>'+escapeHtml(name)+'</b>'
     + '<span class="tool-status '+st+'">'+(st==='running'?'运行中…':st==='error'?'失败':'成功')+'</span>'
     + '<span class="tool-toggle">▾</span>';
-  const body = document.createElement('div'); body.className='tool-body';
+  const cbody = document.createElement('div'); cbody.className='tool-body';
   const ad = document.createElement('div'); ad.className='tool-label'; ad.textContent='参数';
   const ap = document.createElement('pre'); ap.textContent = JSON.stringify(args, null, 2);
-  body.appendChild(ad); body.appendChild(ap);
-  if(result!==undefined && result!==null){ body.appendChild(makeResBlock(result)); }
-  card.appendChild(head); card.appendChild(body);
-  (currentTurn || log).appendChild(card);
+  cbody.appendChild(ad); cbody.appendChild(ap);
+  if(result!==undefined && result!==null){ cbody.appendChild(makeResBlock(result)); }
+  card.appendChild(head); card.appendChild(cbody);
+  body.appendChild(card);
+  // 更新块头计数
+  eb.querySelector('.exec-count').textContent = body.querySelectorAll('.tool').length + ' 个工具';
   head.onclick = ()=>card.classList.toggle('open');
   return card;
 }
